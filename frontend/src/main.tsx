@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ChevronUp,
   Clipboard,
+  Clock,
   Compass,
   Download,
   ExternalLink,
@@ -379,9 +380,9 @@ function App() {
 
   // Outreach & Lead CRM state
   const [leadMetrics, setLeadMetrics] = useState<LeadMetrics | null>(null);
-  const [quickSegment, setQuickSegment] = useState<"all" | "prime" | "social" | "pipeline" | "won" | "not_interested">("all");
+  const [quickSegment, setQuickSegment] = useState<"all" | "prime" | "social" | "pipeline" | "won" | "not_interested">("prime");
   const [filterOutreachStatus, setFilterOutreachStatus] = useState("");
-  const [filterPrimeLeads, setFilterPrimeLeads] = useState(false);
+  const [filterPrimeLeads, setFilterPrimeLeads] = useState(true);
   const [filterSocialOnly, setFilterSocialOnly] = useState(false);
 
   // Outreach editing state in Modal
@@ -409,33 +410,6 @@ function App() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [totalItems, setTotalItems] = useState(0);
-
-  // Category organization & View mode
-  const [viewMode, setViewMode] = useState<"grouped" | "table">("grouped");
-  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
-
-  const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const b of businesses) {
-      const cat = b.category || "Uncategorized";
-      counts[cat] = (counts[cat] || 0) + 1;
-    }
-    return counts;
-  }, [businesses]);
-
-  const sortedCategoryNames = useMemo(() => {
-    return Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a]);
-  }, [categoryCounts]);
-
-  const groupedBusinesses = useMemo(() => {
-    const groups: Record<string, Business[]> = {};
-    for (const b of businesses) {
-      const cat = b.category || "Uncategorized";
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(b);
-    }
-    return groups;
-  }, [businesses]);
 
   // UI state
   const [runMessage, setRunMessage] = useState("");
@@ -742,14 +716,6 @@ function App() {
     }
   };
 
-  const applyPresetAndRun = (locVal: string, catVal: string, provVal: string, limitVal: number) => {
-    setLocationId(locVal);
-    setCategoryId(catVal);
-    setSelectedProvider(provVal);
-    setMaxRecords(limitVal);
-    startDiscovery({ locationId: locVal, categoryId: catVal, provider: provVal, maxRecords: limitVal });
-  };
-
   const cancelDiscovery = async (runId: string) => {
     try {
       const run = await api<DiscoveryRun>(`/discovery/${runId}/cancel`, { method: "POST" });
@@ -897,21 +863,18 @@ function App() {
     <table>
       <thead>
         <tr>
-          <th>Business Name</th>
-          <th>Category</th>
+          <th>Business & Category</th>
           <th>Location</th>
           <th>Contact & Direct Pitch</th>
-          <th>Website Candidate</th>
-          <th>Presence Status</th>
-          <th>Found Via</th>
-          <th>Sales Pipeline</th>
+          <th>Website Status</th>
+          <th>Sales Pipeline & Notes</th>
         </tr>
       </thead>
       <tbody>
         {items.length === 0 ? (
           <tr>
-            <td colSpan={8} style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)" }}>
-              No business records match the current filters. Run a discovery or adjust search criteria.
+            <td colSpan={5} style={{ textAlign: "center", padding: "36px", color: "var(--text-muted)" }}>
+              No businesses found matching current filters. Run a search above or switch segment tabs.
             </td>
           </tr>
         ) : (
@@ -929,29 +892,46 @@ function App() {
             return (
               <tr key={biz.id}>
                 <td>
-                  <button className="link-button" onClick={() => openBusiness(biz.id)}>
-                    {biz.name}
-                  </button>
-                </td>
-                <td>
-                  <span className="badge-category">
-                    {getCategoryIcon(biz.category)} {biz.category}
-                  </span>
-                </td>
-                <td>
-                  <MapPin size={12} style={{ display: "inline", marginRight: "4px", verticalAlign: "middle" }} />
-                  {locationDisplay}
-                </td>
-                <td>
                   <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <button
+                      className="link-button"
+                      style={{ fontSize: "0.95rem", fontWeight: 700 }}
+                      onClick={() => openBusiness(biz.id)}
+                      title="Click to view full profile & cold outreach pitch scripts"
+                    >
+                      {biz.name}
+                    </button>
+                    <div>
+                      <span className="badge-category">
+                        {getCategoryIcon(biz.category)} {biz.category}
+                      </span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#374151" }}>
+                    <MapPin size={13} style={{ color: "var(--primary)", flexShrink: 0 }} />
+                    <span>{locationDisplay}</span>
+                  </div>
+                </td>
+                <td>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {biz.phone ? (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                        <Phone size={12} style={{ color: "var(--primary)", flexShrink: 0 }} />
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                         <a
                           href={`tel:${biz.phone}`}
-                          style={{ color: "inherit", textDecoration: "none", fontWeight: 600, fontSize: "0.84rem" }}
-                          title="Call phone number"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            color: "inherit",
+                            textDecoration: "none",
+                            fontWeight: 700,
+                            fontSize: "0.88rem",
+                          }}
+                          title="Click to dial phone number directly"
                         >
+                          <Phone size={13} style={{ color: "var(--primary)" }} />
                           {biz.phone}
                         </a>
                         {getWhatsAppUrl(biz.phone) && (
@@ -960,7 +940,7 @@ function App() {
                             target="_blank"
                             rel="noopener noreferrer"
                             className="whatsapp-badge"
-                            title="Send pre-filled cold outreach pitch to this business on WhatsApp"
+                            title="Open WhatsApp with pre-filled website development pitch"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <MessageSquare size={11} /> Pitch WA
@@ -970,7 +950,7 @@ function App() {
                     ) : null}
 
                     {biz.email ? (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
                         <Mail size={12} style={{ color: "#2563eb", flexShrink: 0 }} />
                         <a
                           href={`mailto:${biz.email}`}
@@ -978,7 +958,7 @@ function App() {
                             color: "#1d4ed8",
                             textDecoration: "none",
                             fontSize: "0.82rem",
-                            maxWidth: "160px",
+                            maxWidth: "180px",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -992,73 +972,69 @@ function App() {
 
                     {!biz.phone && !biz.email && (
                       <span style={{ color: "var(--text-muted)", fontStyle: "italic", fontSize: "0.8rem" }}>
-                        None supplied
+                        No direct contact supplied
                       </span>
                     )}
                   </div>
                 </td>
                 <td>
-                  {hasValidWebsite ? (
-                    <a
-                      href={biz.website_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ display: "inline-flex", alignItems: "center", gap: "4px", color: "var(--primary)" }}
-                    >
-                      <Globe size={13} />
-                      <span style={{ maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                    <StatusBadge status={biz.website_status} />
+                    {hasValidWebsite && (
+                      <a
+                        href={biz.website_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px",
+                          color: "var(--primary)",
+                          fontSize: "0.78rem",
+                          maxWidth: "180px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <ExternalLink size={11} />
                         {biz.website_url!.replace(/^https?:\/\//, "")}
-                      </span>
-                      <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    <span style={{ color: "var(--text-muted)", fontStyle: "italic", fontSize: "0.8rem" }}>
-                      None detected
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <StatusBadge status={biz.website_status} />
-                </td>
-                <td>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "5px", alignItems: "flex-start" }}>
-                    <span className="badge badge-source" title={`Primary Source: ${biz.primary_source || "Public Source"}`}>
-                      {biz.primary_source || "Public Source"}
-                    </span>
-                    <button
-                      className="trace-button"
-                      title="See how this business was discovered and verified"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setInspectingDiscovery(biz);
-                      }}
-                    >
-                      <Compass size={12} />
-                      <span>Trace Origin</span>
-                    </button>
+                      </a>
+                    )}
                   </div>
                 </td>
                 <td>
-                  <OutreachBadge
-                    status={biz.outreach_status}
-                    onChange={(newStatus) => updateBusinessOutreach(biz.id, newStatus)}
-                  />
-                  {biz.outreach_notes && (
-                    <div
-                      style={{
-                        fontSize: "0.72rem",
-                        color: "var(--text-muted)",
-                        marginTop: "4px",
-                        maxWidth: "150px",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={biz.outreach_notes}
-                    >
-                      📝 {biz.outreach_notes}
-                    </div>
-                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                    <OutreachBadge
+                      status={biz.outreach_status}
+                      onChange={(newStatus) => updateBusinessOutreach(biz.id, newStatus)}
+                    />
+                    {biz.outreach_notes ? (
+                      <div
+                        style={{
+                          fontSize: "0.76rem",
+                          color: "var(--text-muted)",
+                          maxWidth: "180px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          cursor: "pointer",
+                        }}
+                        title={`${biz.outreach_notes} (Click to edit)`}
+                        onClick={() => openBusiness(biz.id)}
+                      >
+                        📝 {biz.outreach_notes}
+                      </div>
+                    ) : (
+                      <button
+                        className="link-button"
+                        style={{ fontSize: "0.72rem", color: "var(--text-muted)", textDecoration: "none" }}
+                        onClick={() => openBusiness(biz.id)}
+                      >
+                        + Add note
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             );
@@ -1162,159 +1138,22 @@ function App() {
         })()
       )}
 
-      {/* Collector & Scraper Studio Panel */}
-      <section className="scraper-studio">
-        <div className="scraper-studio-header">
-          <div>
-            <p className="eyebrow" style={{ color: "var(--primary)", fontWeight: 800 }}>PROSPECTING ENGINE & WEB CRAWLER</p>
-            <h2>Collector & Business Scraper Studio</h2>
-            <p>
-              Crawl public sources across Sri Lanka to harvest businesses without websites, extract phone numbers, and populate your tele-sales calling list.
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <span className="badge badge-verified" style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-              <Radio size={13} /> {providers.length || 5} Crawlers Active
-            </span>
-          </div>
+      {/* STEP 1: LEAD COLLECTOR CARD */}
+      <section className="collector-step-card">
+        <div className="step-badge-row">
+          <span className="step-pill">Step 1</span>
+          <span className="step-title">Find Businesses to Call</span>
         </div>
+        <p className="step-desc">
+          Scan Sri Lankan directories and maps to discover local businesses and check if they have a website.
+        </p>
 
-        {/* 1-Click Quick Presets Bar */}
-        <div style={{ marginBottom: "16px" }}>
-          <div style={{ fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", color: "#4f695b", marginBottom: "8px" }}>
-            ⚡ 1-Click Quick Scraper Presets
-          </div>
-          <div className="scraper-presets-bar">
-            <button
-              type="button"
-              className="scraper-preset-pill"
-              onClick={() => applyPresetAndRun("province:Western", "", "composite", 50)}
-              title="Scrape businesses across Western Province across all categories"
-            >
-              🚀 Western Province Cross-Industry (50)
-            </button>
-            <button
-              type="button"
-              className="scraper-preset-pill"
-              onClick={() => {
-                const colombo = locations.find((l) => l.city === "Colombo");
-                applyPresetAndRun(colombo ? colombo.id : "province:Western", "", "composite", 50);
-              }}
-              title="Scrape Colombo prime targets with phone numbers"
-            >
-              🏙️ Colombo Prime Targets (50)
-            </button>
-            <button
-              type="button"
-              className="scraper-preset-pill"
-              onClick={() => {
-                const galle = locations.find((l) => l.city === "Galle");
-                const hotelCat = categories.find((c) => c.slug === "hotels");
-                applyPresetAndRun(galle ? galle.id : "province:Southern", hotelCat ? hotelCat.id : "", "directory", 30);
-              }}
-              title="Scrape Galle hospitality and hotels via RainbowPages Phonebook"
-            >
-              🏖️ Galle & South Coast Hospitality (30)
-            </button>
-            <button
-              type="button"
-              className="scraper-preset-pill"
-              onClick={() => {
-                const kandy = locations.find((l) => l.city === "Kandy");
-                const cafeCat = categories.find((c) => c.slug === "cafes" || c.slug === "restaurants");
-                applyPresetAndRun(kandy ? kandy.id : "province:Central", cafeCat ? cafeCat.id : "", "osm", 30);
-              }}
-              title="Scrape Kandy cafes & food businesses"
-            >
-              ☕ Kandy Cafes & Food (30)
-            </button>
-            <button
-              type="button"
-              className="scraper-preset-pill"
-              onClick={() => applyPresetAndRun("", "", "composite", 100)}
-              title="Deep sweep across all Sri Lanka"
-            >
-              🔥 Nationwide Deep Sweep (100)
-            </button>
-          </div>
-        </div>
-
-        {/* Crawler Provider Selection Cards */}
-        <div style={{ marginBottom: "18px" }}>
-          <div style={{ fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", color: "#4f695b", marginBottom: "8px" }}>
-            Select Data Crawler / Source Provider
-          </div>
-          <div className="provider-grid">
-            {(providers.length > 0
-              ? providers
-              : [
-                  {
-                    id: "composite",
-                    name: "Multi-Source Deep Sweep",
-                    description: "Cross-references OSM, RainbowPages Directory, and LinkedIn for highest contact yield.",
-                    badge: "Recommended",
-                    is_healthy: true,
-                  },
-                  {
-                    id: "osm",
-                    name: "OpenStreetMap Places",
-                    description: "Overpass API geospatial business nodes and place tags across Sri Lanka.",
-                    badge: "Geo Data",
-                    is_healthy: true,
-                  },
-                  {
-                    id: "directory",
-                    name: "Sri Lanka Directory",
-                    description: "Scrapes RainbowPages national directory for local landline & mobile phone numbers.",
-                    badge: "Direct Phones",
-                    is_healthy: true,
-                  },
-                  {
-                    id: "search",
-                    name: "Web & LinkedIn Search",
-                    description: "Discovers active local businesses and corporate LinkedIn presences.",
-                    badge: "Social Search",
-                    is_healthy: true,
-                  },
-                  {
-                    id: "mock",
-                    name: "Simulated Dev Dataset",
-                    description: "Instant offline mock dataset of Sri Lankan businesses for rapid test runs.",
-                    badge: "Test Run",
-                    is_healthy: true,
-                  },
-                ]
-            ).map((p) => (
-              <div
-                key={p.id}
-                className={`provider-card ${selectedProvider === p.id ? "active" : ""}`}
-                onClick={() => setSelectedProvider(p.id)}
-              >
-                <div className="provider-card-header">
-                  <span className="provider-card-title">{p.name}</span>
-                  <span
-                    className={`provider-card-badge ${
-                      p.id === "composite" ? "provider-badge-recommended" : "provider-badge-other"
-                    }`}
-                  >
-                    {p.badge}
-                  </span>
-                </div>
-                <p className="provider-card-desc">{p.description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Scraper Configuration Bar */}
-        <div className="scraper-controls-bar">
-          <div>
-            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
-              Target Geography
-            </label>
+        <div className="collector-form-row">
+          <div className="form-field">
+            <label>1. Location</label>
             <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
               <option value="">All Sri Lanka (Nationwide)</option>
-              <optgroup label="Provinces (Province-Wide Sweep)">
+              <optgroup label="Provinces">
                 {SRI_LANKA_PROVINCES.map((prov) => (
                   <option key={`province:${prov}`} value={`province:${prov}`}>
                     {prov} Province
@@ -1331,12 +1170,10 @@ function App() {
             </select>
           </div>
 
-          <div>
-            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
-              Business Category
-            </label>
+          <div className="form-field">
+            <label>2. Category</label>
             <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-              <option value="">✨ All Categories (Cross-Industry Sweep)</option>
+              <option value="">✨ All Categories (Broad Search)</option>
               {categories.filter((c) => c.slug !== "all").map((cat) => (
                 <option key={cat.id} value={cat.id}>
                   {cat.name}
@@ -1345,453 +1182,284 @@ function App() {
             </select>
           </div>
 
-          <div>
-            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
-              Lead Limit
-            </label>
-            <div className="limit-selector">
-              <button
-                type="button"
-                className={`limit-pill ${maxRecords === 20 ? "active" : ""}`}
-                onClick={() => setMaxRecords(20)}
-              >
-                20
-              </button>
-              <button
-                type="button"
-                className={`limit-pill ${maxRecords === 50 ? "active" : ""}`}
-                onClick={() => setMaxRecords(50)}
-              >
-                50
-              </button>
-              <button
-                type="button"
-                className={`limit-pill ${maxRecords === 100 ? "active" : ""}`}
-                onClick={() => setMaxRecords(100)}
-              >
-                100
-              </button>
-            </div>
+          <div className="form-field" style={{ maxWidth: "160px" }}>
+            <label>3. How Many Leads</label>
+            <select value={maxRecords} onChange={(e) => setMaxRecords(Number(e.target.value))}>
+              <option value={20}>20 Businesses</option>
+              <option value={50}>50 Businesses</option>
+              <option value={100}>100 Businesses</option>
+            </select>
           </div>
 
-          <button
-            style={{ height: "42px", padding: "0 22px", fontSize: "0.92rem", fontWeight: 700 }}
-            disabled={startingDiscovery}
-            onClick={() => startDiscovery()}
-          >
-            {startingDiscovery ? <RefreshCw className="spin" size={16} /> : <Search size={16} />}
-            {startingDiscovery ? "Launching..." : "🚀 Launch Scraper"}
-          </button>
+          <div className="form-field" style={{ maxWidth: "220px" }}>
+            <label>4. Search Source</label>
+            <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value)}>
+              <option value="composite">⚡ Multi-Source (Best Contact Yield)</option>
+              <option value="osm">🗺️ OpenStreetMap Places</option>
+              <option value="directory">📖 RainbowPages Phone Directory</option>
+              <option value="search">🔍 Web & Social Search</option>
+              <option value="mock">🧪 Test / Mock Dataset</option>
+            </select>
+          </div>
+
+          <div className="form-action">
+            <button
+              className="launch-button"
+              disabled={startingDiscovery}
+              onClick={() => startDiscovery()}
+            >
+              {startingDiscovery ? <RefreshCw className="spin" size={16} /> : <Search size={16} />}
+              {startingDiscovery ? "Searching..." : "🚀 Find Businesses"}
+            </button>
+          </div>
         </div>
 
         {runMessage && (
-          <p className="helper" style={{ marginTop: "12px", fontWeight: 600, color: "var(--primary)" }}>
+          <div className="collector-message">
             {runMessage}
-          </p>
+          </div>
         )}
       </section>
 
-      {/* Runs activity list */}
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">SCRAPER AUDIT LOG</p>
-            <h2>Discovery run history</h2>
-          </div>
-          <p>Runs execute asynchronously with retry backoff, phone/email contact extraction, and SSRF-safe website analysis.</p>
+      {/* STEP 2: REVIEW TARGETS & CALLING PIPELINE */}
+      <section className="pipeline-section">
+        <div className="step-badge-row">
+          <span className="step-pill">Step 2</span>
+          <span className="step-title">Review Targets & Start Calling</span>
         </div>
-        {runs.length === 0 ? (
-          <p className="helper">No discovery runs initiated yet.</p>
-        ) : (
-          <div className="run-list">
-            {runs.slice(0, 5).map((run) => (
-              <div className="run-row" key={run.id}>
-                <div>
-                  <div className="run-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span>{run.city || run.district || run.province || "Sri Lanka"} ·{" "}
-                    {categories.find((cat) => cat.id === run.category_id)?.name || "All Categories"}</span>
-                    <span className="badge" style={{ fontSize: "0.7rem", background: "#e0f2fe", color: "#0369a1" }}>
-                      {(run.source_provider || "composite").toUpperCase()}
-                    </span>
-                  </div>
-                  <span className="run-meta">
-                    {run.businesses_found} businesses discovered · {run.websites_checked} websites analyzed ·{" "}
-                    {run.websites_found} verified online · <strong style={{ color: "var(--primary)" }}>{run.websites_not_detected} targets without website (Prime Opportunities)</strong>
-                  </span>
-                  {run.error && <div className="run-error">Error: {run.error}</div>}
-                </div>
-                <div className="actions">
-                  <span className={`badge status-${run.status.toLowerCase()}`}>{run.status}</span>
-                  {filterRunId === run.id ? (
-                    <button className="secondary small" onClick={() => setFilterRunId("")}>
-                      Clear run filter
-                    </button>
-                  ) : (
-                    <button className="secondary small" onClick={() => setFilterRunId(run.id)}>
-                      Filter leads to this scrape
-                    </button>
-                  )}
-                  {(run.status === "QUEUED" || run.status === "RUNNING") && (
-                    <button className="secondary small" onClick={() => cancelDiscovery(run.id)}>
-                      Cancel
-                    </button>
-                  )}
-                </div>
+        <p className="step-desc">
+          Focus on businesses with verified phone numbers that do not have a website. Click any business to view their pitch script.
+        </p>
+
+        {/* 4 Clean Metric Cards */}
+        <div className="stats-clean-grid">
+          <div
+            className={`metric-clean-card ${quickSegment === "prime" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("prime")}
+            title="Filter to Prime Targets: No website detected, phone number available"
+          >
+            <div className="metric-icon-wrap prime">🎯</div>
+            <div>
+              <div className="metric-clean-val">{leadMetrics?.prime_targets ?? 0}</div>
+              <div className="metric-clean-lbl">Prime Calling Targets (No Website)</div>
+            </div>
+          </div>
+
+          <div
+            className={`metric-clean-card ${quickSegment === "social" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("social")}
+            title="Filter to Social Only: Has Facebook/Instagram presence, but no official website"
+          >
+            <div className="metric-icon-wrap social">📱</div>
+            <div>
+              <div className="metric-clean-val">{leadMetrics?.social_only ?? 0}</div>
+              <div className="metric-clean-lbl">Social Media Only (Ready for Website)</div>
+            </div>
+          </div>
+
+          <div
+            className={`metric-clean-card ${quickSegment === "pipeline" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("pipeline")}
+            title="Filter to Active Pipeline: Contacted or in negotiation"
+          >
+            <div className="metric-icon-wrap pipeline">📞</div>
+            <div>
+              <div className="metric-clean-val">
+                {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}
               </div>
-            ))}
+              <div className="metric-clean-lbl">In Active Outreach</div>
+            </div>
           </div>
-        )}
-      </section>
 
-      {/* Sales Pipeline & Outreach KPI Stats */}
-      <section className="stats">
-        <article
-          onClick={() => selectQuickSegment("all")}
-          title="Click to view all discovered leads"
-        >
-          <strong>{leadMetrics?.total_leads ?? totalItems}</strong>
-          <span>Total Discovered Leads</span>
-        </article>
-        <article
-          className="prime-target-card"
-          onClick={() => selectQuickSegment("prime")}
-          title="Click to view Prime Calling Targets (No website + Phone)"
-        >
-          <strong>🎯 {leadMetrics?.prime_targets ?? 0}</strong>
-          <span>Prime Targets (No Website + Phone)</span>
-        </article>
-        <article
-          className="social-card"
-          onClick={() => selectQuickSegment("social")}
-          title="Click to view businesses with social presence but no website"
-        >
-          <strong>📱 {leadMetrics?.social_only ?? 0}</strong>
-          <span>Social Presence Only (High Upsell)</span>
-        </article>
-        <article
-          className="pipeline-card"
-          onClick={() => selectQuickSegment("pipeline")}
-          title="Click to view leads in active outreach pipeline"
-        >
-          <strong>📞 {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}</strong>
-          <span>In Active Outreach Pipeline</span>
-        </article>
-        <article
-          className="won-card"
-          onClick={() => selectQuickSegment("won")}
-          title="Click to view closed won website design deals"
-        >
-          <strong>🏆 {leadMetrics?.pipeline_won ?? 0}</strong>
-          <span>Website Deals Won 🎉</span>
-        </article>
-      </section>
-
-      {/* Quick Pipeline Segment Tabs */}
-      <div className="pipeline-tabs">
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "all" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("all")}
-        >
-          <span>All Leads</span>
-          <span className="tab-badge">{leadMetrics?.total_leads ?? totalItems}</span>
-        </button>
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "prime" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("prime")}
-        >
-          <span>⚡ Prime Calling List</span>
-          <span className="tab-badge">{leadMetrics?.prime_targets ?? 0}</span>
-        </button>
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "social" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("social")}
-        >
-          <span>📱 Social Only</span>
-          <span className="tab-badge">{leadMetrics?.social_only ?? 0}</span>
-        </button>
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "pipeline" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("pipeline")}
-        >
-          <span>📞 Contacted / In Pipeline</span>
-          <span className="tab-badge">
-            {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}
-          </span>
-        </button>
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "won" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("won")}
-        >
-          <span>🏆 Deals Won</span>
-          <span className="tab-badge">{leadMetrics?.pipeline_won ?? 0}</span>
-        </button>
-        <button
-          type="button"
-          className={`pipeline-tab ${quickSegment === "not_interested" ? "active" : ""}`}
-          onClick={() => selectQuickSegment("not_interested")}
-        >
-          <span>✖️ Not Interested</span>
-          <span className="tab-badge">{leadMetrics?.pipeline_not_interested ?? 0}</span>
-        </button>
-      </div>
-
-      {/* Filter Toolbar */}
-      <section className="filter-toolbar">
-        <div>
-          <label>Search</label>
-          <input
-            placeholder="Name, phone, address..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && loadBusinesses(1)}
-          />
-        </div>
-        <div>
-          <label>Category</label>
-          <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
-            <option value="">All Categories</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label>Outreach Stage</label>
-          <select value={filterOutreachStatus} onChange={(e) => setFilterOutreachStatus(e.target.value)}>
-            <option value="">All Stages</option>
-            <option value="NEW">✨ New Leads</option>
-            <option value="CONTACTED">📞 Contacted</option>
-            <option value="FOLLOW_UP">⏳ Follow-Up Needed</option>
-            <option value="PROPOSAL_SENT">📄 Proposal Sent</option>
-            <option value="WON">🏆 Deals Won 🎉</option>
-            <option value="NOT_INTERESTED">✖️ Not Interested</option>
-          </select>
-        </div>
-        <div>
-          <label>Website Status</label>
-          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-            <option value="">All Statuses</option>
-            <option value="WEBSITE_FOUND">Website Found</option>
-            <option value="WEBSITE_NOT_DETECTED">Website Not Detected</option>
-            <option value="WEBSITE_UNCLEAR">Website Status Unclear</option>
-            <option value="WEBSITE_UNREACHABLE">Website Unreachable</option>
-            <option value="WEBSITE_PARKED">Website Parked</option>
-            <option value="SOCIAL_ONLY">Social Presence Only</option>
-          </select>
-        </div>
-        <div>
-          <label>Province</label>
-          <select value={filterProvince} onChange={(e) => setFilterProvince(e.target.value)}>
-            <option value="">All Provinces</option>
-            {SRI_LANKA_PROVINCES.map((prov) => (
-              <option key={prov} value={prov}>
-                {prov} Province
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label>Sort By</label>
-          <select value={`${sortBy}:${sortOrder}`} onChange={(e) => {
-            const [sb, so] = e.target.value.split(":");
-            setSortBy(sb);
-            setSortOrder(so as "asc" | "desc");
-          }}>
-            <option value="created_at:desc">Newest First</option>
-            <option value="created_at:asc">Oldest First</option>
-            <option value="name:asc">Name (A-Z)</option>
-            <option value="name:desc">Name (Z-A)</option>
-            <option value="city:asc">City (A-Z)</option>
-            <option value="website_status:asc">Website Status</option>
-            <option value="outreach_status:asc">Outreach Stage</option>
-            <option value="last_contacted_at:desc">Recently Contacted</option>
-          </select>
-        </div>
-        <div className="actions">
-          <button onClick={() => loadBusinesses(1)}>
-            <Search size={14} /> Filter
-          </button>
-          <button className="secondary" onClick={resetFilters}>
-            Clear
-          </button>
-        </div>
-      </section>
-
-      {/* Business Results Table */}
-      <section className="panel">
-        <div className="panel-heading" style={{ alignItems: "center" }}>
-          <div>
-            <p className="eyebrow">RESULTS</p>
-            <h2>Discovered Sri Lankan Businesses ({totalItems})</h2>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <div className="view-toggle">
-              <button
-                type="button"
-                className={viewMode === "grouped" ? "active" : ""}
-                onClick={() => setViewMode("grouped")}
-                title="Organize by category sections"
-              >
-                <Layers size={13} /> Grouped by Category
-              </button>
-              <button
-                type="button"
-                className={viewMode === "table" ? "active" : ""}
-                onClick={() => setViewMode("table")}
-                title="Unified flat table"
-              >
-                <Table size={13} /> Flat Table
-              </button>
+          <div
+            className={`metric-clean-card ${quickSegment === "won" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("won")}
+            title="Filter to Closed Won Deals"
+          >
+            <div className="metric-icon-wrap won">🏆</div>
+            <div>
+              <div className="metric-clean-val">{leadMetrics?.pipeline_won ?? 0}</div>
+              <div className="metric-clean-lbl">Deals Closed Won 🎉</div>
             </div>
           </div>
         </div>
 
+        {/* Intuitive Segment Tabs */}
+        <div className="calling-segment-tabs">
+          <button
+            type="button"
+            className={`calling-tab ${quickSegment === "prime" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("prime")}
+          >
+            🎯 Prime Targets (No Website)
+            <span className="tab-pill-badge">{leadMetrics?.prime_targets ?? 0}</span>
+          </button>
+          <button
+            type="button"
+            className={`calling-tab ${quickSegment === "social" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("social")}
+          >
+            📱 Social Media Only
+            <span className="tab-pill-badge">{leadMetrics?.social_only ?? 0}</span>
+          </button>
+          <button
+            type="button"
+            className={`calling-tab ${quickSegment === "pipeline" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("pipeline")}
+          >
+            📞 Contacted / In Pipeline
+            <span className="tab-pill-badge">
+              {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`calling-tab ${quickSegment === "won" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("won")}
+          >
+            🏆 Deals Won
+            <span className="tab-pill-badge">{leadMetrics?.pipeline_won ?? 0}</span>
+          </button>
+          <button
+            type="button"
+            className={`calling-tab ${quickSegment === "all" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("all")}
+          >
+            All Leads ({leadMetrics?.total_leads ?? totalItems})
+          </button>
+        </div>
+
+        {/* Clean, Simple Filter Bar */}
+        <div className="leads-filter-bar">
+          <div className="filter-input-wrap">
+            <Search size={15} className="filter-icon" />
+            <input
+              type="text"
+              placeholder="Search by business name, phone, or address..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && loadBusinesses(1)}
+            />
+          </div>
+
+          <div style={{ minWidth: "180px" }}>
+            <select value={filterProvince} onChange={(e) => setFilterProvince(e.target.value)}>
+              <option value="">All Provinces</option>
+              {SRI_LANKA_PROVINCES.map((prov) => (
+                <option key={prov} value={prov}>{prov} Province</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ minWidth: "180px" }}>
+            <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
+              <option value="">All Categories</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {(search || filterProvince || filterCategory || filterDistrict || filterCity || filterStatus || filterRunId) && (
+            <button className="secondary small" onClick={resetFilters}>
+              Reset Filters
+            </button>
+          )}
+        </div>
+
         {filterRunId && (
-          <div style={{ marginBottom: "12px" }}>
-            <span className="badge badge-inferred">Filtered to Run: {filterRunId.slice(0, 8)}</span>
+          <div style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
+            <span className="badge badge-inferred">Filtered to Scraper Run: {filterRunId.slice(0, 8)}</span>
+            <button className="link-button" style={{ fontSize: "0.8rem" }} onClick={() => setFilterRunId("")}>
+              Clear run filter
+            </button>
           </div>
         )}
 
-        {/* Category Navigation Pills Bar */}
-        <div className="category-pills-bar">
-          <button
-            className={`category-pill ${!filterCategory ? "active" : ""}`}
-            onClick={() => setFilterCategory("")}
-            type="button"
-            title="Show all categories"
-          >
-            <span>All Categories</span>
-            <span className="pill-count">{totalItems}</span>
-          </button>
-          {categories.map((cat) => {
-            const count = categoryCounts[cat.name] || 0;
-            const isSelected = filterCategory === cat.id;
-            return (
-              <button
-                key={cat.id}
-                className={`category-pill ${isSelected ? "active" : ""}`}
-                onClick={() => setFilterCategory(isSelected ? "" : cat.id)}
-                type="button"
-                title={`Filter to ${cat.name}`}
-              >
-                <span>{getCategoryIcon(cat.name)} {cat.name}</span>
-                {count > 0 && <span className="pill-count">{count}</span>}
-              </button>
-            );
-          })}
-        </div>
-
-        {viewMode === "grouped" && sortedCategoryNames.length > 0 ? (
-          <div>
-            {sortedCategoryNames.map((catName) => {
-              const list = groupedBusinesses[catName] || [];
-              const isCollapsed = collapsedCategories[catName] ?? false;
-              const foundCount = list.filter((b) => b.website_status === "WEBSITE_FOUND").length;
-              const notDetectedCount = list.filter((b) => b.website_status === "WEBSITE_NOT_DETECTED" || b.website_status === "SOCIAL_ONLY").length;
-              const contactsCount = list.filter((b) => b.phone || b.email).length;
-
-              return (
-                <div key={catName} className="category-group-card">
-                  <div
-                    className="category-group-header"
-                    onClick={() => setCollapsedCategories((prev) => ({ ...prev, [catName]: !isCollapsed }))}
-                  >
-                    <div className="category-group-title">
-                      <span style={{ fontSize: "1.25rem" }}>{getCategoryIcon(catName)}</span>
-                      <h3>{catName}</h3>
-                      <span className="badge badge-source" style={{ fontWeight: 700 }}>
-                        {list.length} {list.length === 1 ? "business" : "businesses"}
-                      </span>
-                    </div>
-
-                    <div className="category-group-stats">
-                      {foundCount > 0 && (
-                        <span className="category-stat-pill found">
-                          ✓ {foundCount} Found
-                        </span>
-                      )}
-                      {notDetectedCount > 0 && (
-                        <span className="category-stat-pill not-detected">
-                          ○ {notDetectedCount} Not Detected
-                        </span>
-                      )}
-                      {contactsCount > 0 && (
-                        <span className="category-stat-pill contacts">
-                          📞 {contactsCount} Contacts
-                        </span>
-                      )}
-                      <button
-                        className="button secondary small"
-                        style={{ marginLeft: "6px", padding: "4px 8px" }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCollapsedCategories((prev) => ({ ...prev, [catName]: !isCollapsed }));
-                        }}
-                      >
-                        {isCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-                        {isCollapsed ? "Expand" : "Collapse"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {!isCollapsed && (
-                    <div style={{ overflowX: "auto" }}>
-                      {renderBusinessTable(list)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ) : (
+        {/* Step 3: Leads Table Card */}
+        <div className="table-responsive-card">
           <div style={{ overflowX: "auto" }}>
             {renderBusinessTable(businesses)}
           </div>
-        )}
 
-        {/* Pagination bar */}
-        <div className="pagination">
-          <div>
-            Showing {(page - 1) * pageSize + (businesses.length ? 1 : 0)} to {Math.min(page * pageSize, totalItems)} of {totalItems} businesses
-          </div>
-          <div className="actions">
-            <select
-              style={{ width: "auto", padding: "4px 8px", fontSize: "0.82rem" }}
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-            >
-              <option value="10">10 per page</option>
-              <option value="25">25 per page</option>
-              <option value="50">50 per page</option>
-              <option value="100">100 per page</option>
-            </select>
-            <button
-              className="secondary small"
-              disabled={page <= 1}
-              onClick={() => loadBusinesses(page - 1)}
-            >
-              <ChevronLeft size={14} /> Previous
-            </button>
-            <span>
-              Page {page} of {totalPages}
-            </span>
-            <button
-              className="secondary small"
-              disabled={page >= totalPages}
-              onClick={() => loadBusinesses(page + 1)}
-            >
-              Next <ChevronRight size={14} />
-            </button>
+          {/* Clean Pagination Bar */}
+          <div className="pagination-bar">
+            <div className="pagination-info">
+              Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({totalItems} total leads)
+            </div>
+            <div className="pagination-controls">
+              <select
+                style={{ width: "auto", padding: "4px 8px", fontSize: "0.82rem" }}
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+              >
+                <option value="10">10 per page</option>
+                <option value="25">25 per page</option>
+                <option value="50">50 per page</option>
+                <option value="100">100 per page</option>
+              </select>
+              <button
+                className="secondary small"
+                disabled={page <= 1}
+                onClick={() => loadBusinesses(page - 1)}
+              >
+                <ChevronLeft size={14} /> Previous
+              </button>
+              <button
+                className="secondary small"
+                disabled={page >= totalPages}
+                onClick={() => loadBusinesses(page + 1)}
+              >
+                Next <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
         </div>
       </section>
+
+      {/* Collapsible Crawler Run History Drawer */}
+      <details className="history-details-drawer">
+        <summary className="history-details-summary">
+          <Clock size={15} />
+          <span>View Crawler History ({runs.length} runs executed)</span>
+        </summary>
+        <div className="history-details-content">
+          {runs.length === 0 ? (
+            <p className="helper">No discovery runs initiated yet.</p>
+          ) : (
+            <div className="run-list">
+              {runs.slice(0, 10).map((run) => (
+                <div className="run-row" key={run.id}>
+                  <div>
+                    <div className="run-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span>{run.city || run.district || run.province || "Sri Lanka"} · {categories.find((cat) => cat.id === run.category_id)?.name || "All Categories"}</span>
+                      <span className="badge" style={{ fontSize: "0.7rem", background: "#e0f2fe", color: "#0369a1" }}>
+                        {(run.source_provider || "composite").toUpperCase()}
+                      </span>
+                    </div>
+                    <span className="run-meta">
+                      {run.businesses_found} businesses discovered · {run.websites_checked} checked ·{" "}
+                      <strong style={{ color: "var(--primary)" }}>{run.websites_not_detected} targets without website</strong>
+                    </span>
+                  </div>
+                  <div className="actions">
+                    <span className={`badge status-${run.status.toLowerCase()}`}>{run.status}</span>
+                    {filterRunId === run.id ? (
+                      <button className="secondary small" onClick={() => setFilterRunId("")}>
+                        Clear
+                      </button>
+                    ) : (
+                      <button className="secondary small" onClick={() => setFilterRunId(run.id)}>
+                        Filter to Run
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
 
       {/* Complete Business Detail Modal / View */}
       {selectedBusiness && (
