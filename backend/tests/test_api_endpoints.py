@@ -13,8 +13,27 @@ def anyio_backend() -> str:
 
 @pytest.fixture(autouse=True)
 async def init_db() -> None:
+    from sqlalchemy import delete, select
+    from app.database import SessionLocal
+    from app.models import Business, BusinessSource
+    async with SessionLocal() as db:
+        mock_biz_ids = (await db.scalars(
+            select(BusinessSource.business_id).where(BusinessSource.external_id.like("mock-%"))
+        )).all()
+        if mock_biz_ids:
+            await db.execute(delete(Business).where(Business.id.in_(mock_biz_ids)))
+            await db.commit()
+
     async with lifespan(app):
         yield
+
+    async with SessionLocal() as db:
+        mock_biz_ids = (await db.scalars(
+            select(BusinessSource.business_id).where(BusinessSource.external_id.like("mock-%"))
+        )).all()
+        if mock_biz_ids:
+            await db.execute(delete(Business).where(Business.id.in_(mock_biz_ids)))
+            await db.commit()
 
 
 @pytest.mark.asyncio
@@ -256,4 +275,82 @@ async def test_collector_scraper_endpoints() -> None:
             get_settings().environment = orig_env
 
 
+@pytest.mark.asyncio
+async def test_subsequent_runs_exclude_previously_found_targets() -> None:
+    unique_email = f"fresh_{uuid4().hex[:8]}@example.com"
+    password = "FreshPassword123"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        reg = await client.post("/api/auth/register", json={"email": unique_email, "password": password})
+        token = reg.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        cats_res = await client.get("/api/categories", headers=headers)
+        photo_cat_id = next(c["id"] for c in cats_res.json() if c["slug"] == "photography")
+
+        # Run 1: Discover first Galle Photography target
+        res1 = await client.post(
+            "/api/collector/run",
+            headers=headers,
+            json={
+                "category_id": photo_cat_id,
+                "source_provider": "mock",
+                "province": "Southern",
+                "city": "Galle",
+                "max_records": 1,
+                "sync_wait": True,
+            },
+        )
+        assert res1.status_code in {200, 202}
+        run1 = res1.json()
+        assert run1["businesses_found"] == 1
+
+        # Get business found in run 1
+        leads_run1 = await client.get(f"/api/businesses?run_id={run1['id']}&exclude_mock=false", headers=headers)
+        assert leads_run1.status_code == 200
+        biz1_ids = {b["id"] for b in leads_run1.json()["data"]}
+        assert len(biz1_ids) == 1
+
+        # Run 2: same location & provider, but previous target must be excluded!
+        res2 = await client.post(
+            "/api/collector/run",
+            headers=headers,
+            json={
+                "category_id": photo_cat_id,
+                "source_provider": "mock",
+                "province": "Southern",
+                "city": "Galle",
+                "max_records": 1,
+                "sync_wait": True,
+            },
+        )
+        assert res2.status_code in {200, 202}
+        run2 = res2.json()
+        assert run2["businesses_found"] == 1
+
+        # Get business found in run 2
+        leads_run2 = await client.get(f"/api/businesses?run_id={run2['id']}&exclude_mock=false", headers=headers)
+        assert leads_run2.status_code == 200
+        biz2_ids = {b["id"] for b in leads_run2.json()["data"]}
+        assert len(biz2_ids) == 1
+
+        # Ensure run 2 yielded a completely fresh, distinct target, not the same one!
+        assert biz1_ids.isdisjoint(biz2_ids), "Run 2 returned previously found target instead of fresh lead!"
+
+        # Run 3: both Galle Photography targets have already been collected, so run 3 finds 0 duplicates
+        res3 = await client.post(
+            "/api/collector/run",
+            headers=headers,
+            json={
+                "category_id": photo_cat_id,
+                "source_provider": "mock",
+                "province": "Southern",
+                "city": "Galle",
+                "max_records": 1,
+                "sync_wait": True,
+            },
+        )
+        assert res3.status_code in {200, 202}
+        run3 = res3.json()
+        assert run3["businesses_found"] == 0, "Run 3 should exclude all already-found targets"
 

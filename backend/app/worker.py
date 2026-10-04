@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -66,6 +67,18 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
             run.websites_not_detected = 0
             await db.commit()
 
+            # Query targets already discovered across database to exclude them from future searches
+            existing_norm_names: set[str] = set((await db.scalars(select(Business.normalized_name))).all())
+            existing_ext_ids: set[str] = set(
+                (await db.scalars(
+                    select(BusinessSource.external_id).join(Business, Business.id == BusinessSource.business_id)
+                )).all()
+            )
+            existing_phones_raw = (await db.scalars(select(Business.phone).where(Business.phone.isnot(None)))).all()
+            existing_phones: set[str] = {
+                re.sub(r"\D", "", p) for p in existing_phones_raw if p and len(re.sub(r"\D", "", p)) >= 7
+            }
+
             discovered_count = 0
             for cat in categories_to_search:
                 await db.refresh(run)
@@ -84,27 +97,36 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                         await db.commit()
                         return
 
-                    existing = await db.scalar(
-                        select(Business).where(Business.normalized_name == normalize_business_name(record.name))
+                    norm_name = normalize_business_name(record.name)
+                    clean_phone = re.sub(r"\D", "", record.phone) if record.phone else ""
+
+                    # Exclude targets that were already discovered in previous runs or exist in database
+                    if (
+                        norm_name in existing_norm_names
+                        or (record.external_id and record.external_id in existing_ext_ids)
+                        or (clean_phone and len(clean_phone) >= 7 and clean_phone in existing_phones)
+                    ):
+                        logger.debug("Skipping previously discovered target: %s (%s)", record.name, record.external_id)
+                        continue
+
+                    # Register newly identified target in sets so duplicates within this run are excluded
+                    existing_norm_names.add(norm_name)
+                    if record.external_id:
+                        existing_ext_ids.add(record.external_id)
+                    if clean_phone and len(clean_phone) >= 7:
+                        existing_phones.add(clean_phone)
+
+                    business = Business(
+                        name=record.name,
+                        normalized_name=norm_name,
+                        phone=record.phone,
+                        email=record.email,
+                        address=record.address,
+                        city=record.city,
+                        district=record.district,
+                        province=record.province,
+                        category_id=cat.id,
                     )
-                    if existing:
-                        business = existing
-                        if not business.phone and record.phone:
-                            business.phone = record.phone
-                        if not business.email and record.email:
-                            business.email = record.email
-                    else:
-                        business = Business(
-                            name=record.name,
-                            normalized_name=normalize_business_name(record.name),
-                            phone=record.phone,
-                            email=record.email,
-                            address=record.address,
-                            city=record.city,
-                            district=record.district,
-                            province=record.province,
-                            category_id=cat.id,
-                        )
                     db.add(business)
                     await db.flush()
                     db.add(BusinessSource(

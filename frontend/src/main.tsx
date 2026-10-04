@@ -872,15 +872,53 @@ function App() {
     );
   }
 
+  const handleSortToggle = (col: string) => {
+    if (sortBy === col) {
+      setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortOrder(col === "name" || col === "city" ? "asc" : "desc");
+    }
+  };
+
+  const getSortIcon = (col: string) => {
+    if (sortBy !== col) return <span className="sort-hint">⇅</span>;
+    return <span className="sort-active">{sortOrder === "asc" ? " ▲" : " ▼"}</span>;
+  };
+
   const renderBusinessTable = (items: Business[]) => (
     <table>
       <thead>
         <tr>
-          <th>Business & Category</th>
-          <th>Location</th>
+          <th
+            className="sortable-col"
+            onClick={() => handleSortToggle("name")}
+            title="Click to sort by Business Name"
+          >
+            Business & Category {getSortIcon("name")}
+          </th>
+          <th
+            className="sortable-col"
+            onClick={() => handleSortToggle("city")}
+            title="Click to sort by City / Location"
+          >
+            Location {getSortIcon("city")}
+          </th>
           <th>Contact & Direct Pitch</th>
-          <th>Website Status</th>
-          <th>Sales Pipeline & Notes</th>
+          <th
+            className="sortable-col"
+            onClick={() => handleSortToggle("website_status")}
+            title="Click to sort by Website Status"
+          >
+            Website Status {getSortIcon("website_status")}
+          </th>
+          <th
+            className="sortable-col"
+            onClick={() => handleSortToggle("last_contacted_at")}
+            title="Click to sort by Sales Pipeline / Recent Contact"
+          >
+            Sales Pipeline & Notes {getSortIcon("last_contacted_at")}
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -1420,7 +1458,28 @@ function App() {
             </select>
           </div>
 
-          {(search || filterProvince || filterCategory || filterDistrict || filterCity || filterStatus || filterRunId) && (
+          <div className="sort-select-wrap">
+            <span className="sort-label">Sort:</span>
+            <select
+              value={`${sortBy}:${sortOrder}`}
+              onChange={(e) => {
+                const [newSort, newOrder] = e.target.value.split(":");
+                setSortBy(newSort);
+                setSortOrder(newOrder as "asc" | "desc");
+              }}
+              title="Change sort order of leads"
+            >
+              <option value="created_at:desc">⚡ Newest Discovered</option>
+              <option value="created_at:asc">📅 Oldest Discovered</option>
+              <option value="name:asc">🔤 Name (A → Z)</option>
+              <option value="name:desc">🔤 Name (Z → A)</option>
+              <option value="city:asc">📍 City (A → Z)</option>
+              <option value="website_status:asc">🌐 Website Status</option>
+              <option value="last_contacted_at:desc">📞 Recently Contacted</option>
+            </select>
+          </div>
+
+          {(search || filterProvince || filterCategory || filterDistrict || filterCity || filterStatus || filterRunId || sortBy !== "created_at" || sortOrder !== "desc") && (
             <button className="secondary small" onClick={resetFilters}>
               Reset Filters
             </button>

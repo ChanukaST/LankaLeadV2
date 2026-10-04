@@ -85,7 +85,14 @@ class BusinessSource(Protocol):
     async def search_businesses(
         self, *, province: str | None, district: str | None, city: str | None, category: str
     ) -> list[SourceBusiness]:
-        ...
+        return [
+            item
+            for item in self._businesses
+            if item.category.casefold() == category.casefold()
+            and (province is None or item.province.casefold() == province.casefold())
+            and (district is None or item.district.casefold() == district.casefold())
+            and (city is None or item.city.casefold() == city.casefold())
+        ]
 
     async def check_health(self) -> ProviderHealth:
         ...
@@ -107,6 +114,42 @@ class MockBusinessSource:
                 "Western",
                 None,
                 (SocialLink("Facebook", "https://facebook.com/mock-colombo-spice"),),
+            ),
+            SourceBusiness(
+                "mock-colombo-restaurant-ocean",
+                "Colombo Ocean Grill",
+                "Restaurants",
+                "+94112345679",
+                "88 Galle Face Road",
+                "Colombo",
+                "Colombo",
+                "Western",
+                None,
+                (SocialLink("Facebook", "https://facebook.com/mock-colombo-ocean"),),
+            ),
+            SourceBusiness(
+                "mock-colombo-restaurant-bistro",
+                "Cinnamon Gardens Bistro",
+                "Restaurants",
+                "+94112345680",
+                "15 Ward Place",
+                "Colombo",
+                "Colombo",
+                "Western",
+                None,
+                (SocialLink("Instagram", "https://instagram.com/mock-cinnamon-bistro"),),
+            ),
+            SourceBusiness(
+                "mock-colombo-restaurant-cafe",
+                "Kollupitiya Coffee Roasters",
+                "Restaurants",
+                "+94112345681",
+                "102 Duplication Road",
+                "Colombo",
+                "Colombo",
+                "Western",
+                None,
+                (SocialLink("Facebook", "https://facebook.com/mock-kollupitiya-coffee"),),
             ),
             SourceBusiness(
                 "mock-kurunegala-restaurant",
@@ -134,11 +177,23 @@ class MockBusinessSource:
                 (SocialLink("Facebook", "https://facebook.com/mock-hill-style"),),
             ),
             SourceBusiness(
-                "mock-galle-photo",
+                "mock-galle-photo-1",
                 "Fort Frame Photography",
                 "Photography",
                 "+94912234567",
                 "3 Lighthouse Street",
+                "Galle",
+                "Galle",
+                "Southern",
+                None,
+                (),
+            ),
+            SourceBusiness(
+                "mock-galle-photo-2",
+                "Southern Light Studios",
+                "Photography",
+                "+94912234568",
+                "15 Rampart Street",
                 "Galle",
                 "Galle",
                 "Southern",
@@ -469,31 +524,36 @@ class SriLankaDirectoryBusinessSource:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         url = "https://rainbowpages.lk/search.php"
-        params = {"s": category.lower(), "l": loc_str.lower()}
         results: list[SourceBusiness] = []
+        slugs_seen: set[str] = set()
+        listing_urls: list[str] = []
         try:
             async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
-                resp = await client.get(url, params=params)
-                if resp.status_code == 200:
-                    hrefs = set(re.findall(r'href="([^"]+)"', resp.text))
-                    listing_pattern = re.compile(
-                        r"https://rainbowpages\.lk/[a-z0-9\-]+/[a-z0-9\-]+/([a-z0-9\-]+)/?", re.IGNORECASE
-                    )
-                    slugs_seen: set[str] = set()
-                    listing_urls: list[str] = []
-                    for h in hrefs:
-                        m = listing_pattern.match(h)
-                        if m:
-                            slug = m.group(1).lower()
-                            if slug not in slugs_seen and slug not in {"advertising", "help", "about", "contact"}:
-                                slugs_seen.add(slug)
-                                listing_urls.append(h)
-                                if len(listing_urls) >= 12:
-                                    break
+                listing_pattern = re.compile(
+                    r"https://rainbowpages\.lk/[a-z0-9\-]+/[a-z0-9\-]+/([a-z0-9\-]+)/?", re.IGNORECASE
+                )
+                for page_num in (1, 2, 3):
+                    p_params = {"s": category.lower(), "l": loc_str.lower()}
+                    if page_num > 1:
+                        p_params["page"] = str(page_num)
+                    resp = await client.get(url, params=p_params)
+                    if resp.status_code == 200:
+                        hrefs = set(re.findall(r'href="([^"]+)"', resp.text))
+                        for h in hrefs:
+                            m = listing_pattern.match(h)
+                            if m:
+                                slug = m.group(1).lower()
+                                if slug not in slugs_seen and slug not in {"advertising", "help", "about", "contact"}:
+                                    slugs_seen.add(slug)
+                                    listing_urls.append(h)
+                                    if len(listing_urls) >= 20:
+                                        break
+                    if len(listing_urls) >= 20:
+                        break
 
-                    tasks = [client.get(u) for u in listing_urls[:6]]
-                    pages = await asyncio.gather(*tasks, return_exceptions=True)
-                    for u, page in zip(listing_urls[:6], pages):
+                tasks = [client.get(u) for u in listing_urls[:12]]
+                pages = await asyncio.gather(*tasks, return_exceptions=True)
+                for u, page in zip(listing_urls[:12], pages):
                         if isinstance(page, httpx.Response) and page.status_code == 200:
                             title_m = re.search(r"<title>(.*?)(?:-|–|\|) Rainbowpages</title>", page.text, re.IGNORECASE)
                             raw_name = title_m.group(1).strip() if title_m else None
@@ -630,64 +690,66 @@ class TikTokBusinessSource:
         queries = [
             f'"{category}" "{loc_str}" Sri Lanka site:tiktok.com/@',
             f'"{category}" "{loc_str}" Sri Lanka "tiktok.com/@"',
+            f'"{category}" Sri Lanka site:tiktok.com/@',
         ]
         seen_handles: set[str] = set()
 
         async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
             for q in queries:
-                try:
-                    resp = await client.get("https://search.yahoo.com/search", params={"p": q})
-                    if resp.status_code == 200:
-                        blocks = re.findall(r'<div class="compTitle[^"]*">(.*?)</div>', resp.text, re.DOTALL)
-                        full_text = resp.text
-
-                        for block in blocks:
-                            m_link = re.search(r'href="([^"]+)"', block)
-                            m_title = re.search(r'<h3[^>]*>(.*?)</h3>', block, re.DOTALL)
-                            if not m_link:
-                                continue
-                            raw_url = m_link.group(1)
-                            ru = re.search(r'/RU=([^/]+)/', raw_url)
-                            target = urllib.parse.unquote(ru.group(1)) if ru else raw_url
-
-                            tt_match = re.search(r'https?://(?:www\.)?tiktok\.com/@([a-zA-Z0-9_.\-]+)', target)
-                            if not tt_match:
-                                continue
-                            raw_handle = tt_match.group(1).rstrip("/").rstrip("?")
-                            handle = raw_handle.casefold()
-                            if handle in {"video", "tag", "foryou", "explore", "live", "music", "about", "discover", ""}:
-                                continue
-                            if handle in seen_handles:
-                                continue
-                            seen_handles.add(handle)
-
-                            clean_handle = handle.replace(".", " ").replace("_", " ").title()
-                            raw_title = m_title.group(1) if m_title else ""
-                            clean_title = re.sub(r'<[^>]+>', '', raw_title)
-                            clean_title = re.sub(r'(\||-)\s*TikTok.*$', '', clean_title, flags=re.IGNORECASE).strip()
-                            clean_title = re.sub(r'Watch trending videos.*$', '', clean_title, flags=re.IGNORECASE).strip()
-                            clean_title = re.sub(r'https?://\S+', '', clean_title).strip()
-                            biz_name = clean_title if (clean_title and len(clean_title) > 2 and "tiktok" not in clean_title.lower()) else clean_handle
-
-                            profile_url = f"https://www.tiktok.com/@{raw_handle}"
-
-                            phone_match = self._PHONE_REGEX.search(full_text)
-                            phone = phone_match.group(0).strip() if phone_match else None
-
-                            results.append(SourceBusiness(
-                                external_id=f"tiktok-{handle}",
-                                name=biz_name,
-                                category=category,
-                                phone=phone,
-                                address=f"{loc_str}, Sri Lanka",
-                                city=city or loc_str,
-                                district=district or loc_str,
-                                province=province or "Sri Lanka",
-                                website=None,
-                                social_links=(SocialLink("TikTok", profile_url),),
-                            ))
-                except (httpx.HTTPError, OSError, ValueError) as exc:
-                    logger.warning("TikTok discovery error for query '%s': %s", q, exc)
+                for page_b in ("1", "11"):
+                    try:
+                        resp = await client.get("https://search.yahoo.com/search", params={"p": q, "b": page_b})
+                        if resp.status_code == 200:
+                            blocks = re.findall(r'<div class="compTitle[^"]*">(.*?)</div>', resp.text, re.DOTALL)
+                            full_text = resp.text
+    
+                            for block in blocks:
+                                m_link = re.search(r'href="([^"]+)"', block)
+                                m_title = re.search(r'<h3[^>]*>(.*?)</h3>', block, re.DOTALL)
+                                if not m_link:
+                                    continue
+                                raw_url = m_link.group(1)
+                                ru = re.search(r'/RU=([^/]+)/', raw_url)
+                                target = urllib.parse.unquote(ru.group(1)) if ru else raw_url
+    
+                                tt_match = re.search(r'https?://(?:www\.)?tiktok\.com/@([a-zA-Z0-9_.\-]+)', target)
+                                if not tt_match:
+                                    continue
+                                raw_handle = tt_match.group(1).rstrip("/").rstrip("?")
+                                handle = raw_handle.casefold()
+                                if handle in {"video", "tag", "foryou", "explore", "live", "music", "about", "discover", ""}:
+                                    continue
+                                if handle in seen_handles:
+                                    continue
+                                seen_handles.add(handle)
+    
+                                clean_handle = handle.replace(".", " ").replace("_", " ").title()
+                                raw_title = m_title.group(1) if m_title else ""
+                                clean_title = re.sub(r'<[^>]+>', '', raw_title)
+                                clean_title = re.sub(r'(\||-)\s*TikTok.*$', '', clean_title, flags=re.IGNORECASE).strip()
+                                clean_title = re.sub(r'Watch trending videos.*$', '', clean_title, flags=re.IGNORECASE).strip()
+                                clean_title = re.sub(r'https?://\S+', '', clean_title).strip()
+                                biz_name = clean_title if (clean_title and len(clean_title) > 2 and "tiktok" not in clean_title.lower()) else clean_handle
+    
+                                profile_url = f"https://www.tiktok.com/@{raw_handle}"
+    
+                                phone_match = self._PHONE_REGEX.search(full_text)
+                                phone = phone_match.group(0).strip() if phone_match else None
+    
+                                results.append(SourceBusiness(
+                                    external_id=f"tiktok-{handle}",
+                                    name=biz_name,
+                                    category=category,
+                                    phone=phone,
+                                    address=f"{loc_str}, Sri Lanka",
+                                    city=city or loc_str,
+                                    district=district or loc_str,
+                                    province=province or "Sri Lanka",
+                                    website=None,
+                                    social_links=(SocialLink("TikTok", profile_url),),
+                                ))
+                    except (httpx.HTTPError, OSError, ValueError) as exc:
+                        logger.warning("TikTok discovery error for query '%s': %s", q, exc)
 
         return results
 

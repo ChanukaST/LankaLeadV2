@@ -859,4 +859,41 @@ tr:hover td { background: #fbfdfb; }
   color: #a7f3d0;
 }
 
+/* Intuitive sorting controls */
+.sort-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+}
+.sort-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+th.sortable-col {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+th.sortable-col:hover {
+  background: #edf6f1;
+  color: var(--primary);
+}
+.sort-hint {
+  opacity: 0.35;
+  font-size: 0.82rem;
+  margin-left: 4px;
+  display: inline-block;
+}
+.sort-active {
+  color: var(--primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+  margin-left: 4px;
+  display: inline-block;
+}
+
+
 
