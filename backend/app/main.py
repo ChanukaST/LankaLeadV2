@@ -138,10 +138,19 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 logger.debug("Cleanup notice for %s: %s", cleanup_sql, exc)
 
     async with SessionLocal() as db:
+        default_categories = (
+            "Restaurants", "Cafes", "Hotels", "Salons",
+            "Photography", "Travel Agencies", "Gyms", "Auto Garages"
+        )
+        for name in default_categories:
+            cat_exists = await db.scalar(select(Category).where(Category.name == name))
+            if not cat_exists:
+                db.add(Category(name=name, slug=name.lower().replace(" ", "-")))
+
         all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
         if not all_cat:
             db.add(Category(name="All Categories", slug="all"))
-            await db.commit()
+        await db.commit()
 
         for province, district, city in ALL_PROVINCES_LOCATIONS:
             exists = await db.scalar(
