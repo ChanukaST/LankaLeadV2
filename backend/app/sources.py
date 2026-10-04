@@ -1,0 +1,690 @@
+import asyncio
+import re
+import urllib.parse
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol
+from urllib.parse import urlparse
+
+import httpx
+
+from app.core.config import get_settings
+
+
+class ProviderError(Exception):
+    """Base error for business data provider failures."""
+
+
+class ProviderTimeoutError(ProviderError):
+    """Provider request timed out."""
+
+
+class ProviderRateLimitError(ProviderError):
+    """Provider returned a rate limit error (HTTP 429)."""
+
+
+class ProviderLocationNotFoundError(ProviderError):
+    """Geocoding failed to find the specified location."""
+
+
+class ProviderRateLimiter:
+    """Ensures a minimum delay between external provider calls to respect rate limits."""
+
+    def __init__(self, min_interval_seconds: float = 1.0) -> None:
+        self.min_interval = min_interval_seconds
+        self._last_call: dict[str, float] = {}
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, key: str = "default") -> None:
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            last = self._last_call.get(key, 0.0)
+            elapsed = now - last
+            if elapsed < self.min_interval:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last_call[key] = asyncio.get_running_loop().time()
+
+
+_provider_limiter = ProviderRateLimiter()
+
+
+@dataclass(frozen=True)
+class ProviderHealth:
+    provider_name: str
+    is_healthy: bool
+    message: str
+    endpoints: tuple[str, ...]
+    last_checked: str
+
+
+@dataclass(frozen=True)
+class SocialLink:
+    platform: str
+    url: str
+
+
+@dataclass(frozen=True)
+class SourceBusiness:
+    external_id: str
+    name: str
+    category: str
+    phone: str | None
+    address: str
+    city: str
+    district: str
+    province: str
+    website: str | None
+    social_links: tuple[SocialLink, ...]
+    email: str | None = None
+
+
+class BusinessSource(Protocol):
+    name: str
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        ...
+
+    async def check_health(self) -> ProviderHealth:
+        ...
+
+
+class MockBusinessSource:
+    name = "Mock development dataset"
+
+    def __init__(self) -> None:
+        self._businesses = [
+            SourceBusiness(
+                "mock-colombo-restaurant",
+                "Colombo Spice Table",
+                "Restaurants",
+                "+94112345678",
+                "42 Sea Street",
+                "Colombo",
+                "Colombo",
+                "Western",
+                None,
+                (SocialLink("Facebook", "https://facebook.com/mock-colombo-spice"),),
+            ),
+            SourceBusiness(
+                "mock-kurunegala-restaurant",
+                "Kurunegala Harvest Restaurant",
+                "Restaurants",
+                "+94372234567",
+                "18 Lake Road",
+                "Kurunegala",
+                "Kurunegala",
+                "North Western",
+                "https://example.com",
+                (SocialLink("Instagram", "https://instagram.com/mock-harvest"),),
+                email="info@harvest.lk",
+            ),
+            SourceBusiness(
+                "mock-kandy-salon",
+                "Hill Country Style Salon",
+                "Salons",
+                "+94812234567",
+                "7 Temple Lane",
+                "Kandy",
+                "Kandy",
+                "Central",
+                None,
+                (SocialLink("Facebook", "https://facebook.com/mock-hill-style"),),
+            ),
+            SourceBusiness(
+                "mock-galle-photo",
+                "Fort Frame Photography",
+                "Photography",
+                "+94912234567",
+                "3 Lighthouse Street",
+                "Galle",
+                "Galle",
+                "Southern",
+                None,
+                (),
+            ),
+            SourceBusiness(
+                "mock-negombo-cafe",
+                "Lagoon Breeze Cafe",
+                "Cafes",
+                "+94312234567",
+                "12 Beach Road",
+                "Negombo",
+                "Gampaha",
+                "Western",
+                None,
+                (SocialLink("Instagram", "https://instagram.com/mock-lagoon-breeze"),),
+            ),
+            SourceBusiness(
+                "mock-kandy-hotel",
+                "Misty Hills Guest Hotel",
+                "Hotels",
+                "+94812239876",
+                "5 Peradeniya Road",
+                "Kandy",
+                "Kandy",
+                "Central",
+                "https://example.com",
+                (),
+            ),
+            SourceBusiness(
+                "mock-jaffna-travel",
+                "Northern Routes Travel",
+                "Travel Agencies",
+                "+94212234567",
+                "9 Hospital Road",
+                "Jaffna",
+                "Jaffna",
+                "Northern",
+                None,
+                (SocialLink("Facebook", "https://facebook.com/mock-northern-routes"),),
+            ),
+            SourceBusiness(
+                "mock-colombo-gym",
+                "Harbour Strength Gym",
+                "Gyms",
+                "+94119876543",
+                "21 Union Place",
+                "Colombo",
+                "Colombo",
+                "Western",
+                None,
+                (),
+            ),
+            SourceBusiness(
+                "mock-galle-garage",
+                "Southern Motor Care",
+                "Auto Garages",
+                "+94917654321",
+                "44 Matara Road",
+                "Galle",
+                "Galle",
+                "Southern",
+                None,
+                (),
+            ),
+        ]
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        return [
+            item
+            for item in self._businesses
+            if item.category.casefold() == category.casefold()
+            and (province is None or item.province.casefold() == province.casefold())
+            and (district is None or item.district.casefold() == district.casefold())
+            and (city is None or item.city.casefold() == city.casefold())
+        ]
+
+    async def check_health(self) -> ProviderHealth:
+        return ProviderHealth(
+            provider_name=self.name,
+            is_healthy=True,
+            message="Mock development provider active (fictional records)",
+            endpoints=("internal://mock",),
+            last_checked=datetime.now(UTC).isoformat(),
+        )
+
+
+class OpenStreetMapBusinessSource:
+    """Fetches public place data from OpenStreetMap's Overpass API with multi-endpoint failover and backoff."""
+
+    name = "OpenStreetMap"
+    _category_filters = {
+        "Restaurants": '[amenity~"restaurant|fast_food|food_court|bar"]',
+        "Cafes": '[amenity~"cafe|bakery|coffee_shop"]',
+        "Hotels": '[tourism~"hotel|guest_house|resort|hostel|motel"]',
+        "Salons": '[shop~"beauty|hairdresser|massage|spa"]',
+        "Photography": '[shop~"photo|photography"]',
+        "Travel Agencies": '[shop~"travel_agency"]',
+        "Gyms": '[leisure~"fitness_centre|sports_centre|fitness_station"]',
+        "Auto Garages": '[shop~"car_repair|car_parts|tyres|motorcycle_repair"]',
+    }
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        category_filter = self._category_filters.get(category)
+        if category_filter is None:
+            return []
+        prov_query = f"{province} Province" if province and not province.endswith("Province") else province
+        area_name = city or district or prov_query or "Sri Lanka"
+        radius = 10000 if city else 25000 if district else 60000 if province else 75000
+        area_filter = await self._area_query(area_name, category_filter, radius)
+        query = f"""
+[out:json][timeout:30];
+{area_filter}
+out center tags;
+"""
+        settings = get_settings()
+        endpoints = settings.overpass_url_list
+        attempted_errors: list[str] = []
+
+        for endpoint in endpoints:
+            host_key = urlparse(endpoint).hostname or "overpass"
+            for attempt in range(settings.overpass_max_retries):
+                await _provider_limiter.acquire(host_key)
+                try:
+                    async with httpx.AsyncClient(timeout=settings.overpass_timeout_seconds) as client:
+                        response = await client.post(
+                            endpoint,
+                            data={"data": query},
+                            headers={"User-Agent": "LankaLead/0.1 (public-business-discovery)"},
+                        )
+                    if response.status_code == 200:
+                        payload = response.json()
+                        return [
+                            self._to_business(element, category, province or "", district or "", city or area_name)
+                            for element in payload.get("elements", [])
+                            if element.get("tags", {}).get("name")
+                        ]
+                    if response.status_code == 429:
+                        wait_sec = settings.overpass_retry_backoff_seconds * (2 ** attempt)
+                        attempted_errors.append(f"{endpoint} returned HTTP 429 (attempt {attempt + 1})")
+                        await asyncio.sleep(wait_sec)
+                        continue
+                    if response.status_code in {502, 503, 504}:
+                        wait_sec = settings.overpass_retry_backoff_seconds * (2 ** attempt)
+                        attempted_errors.append(f"{endpoint} returned HTTP {response.status_code} (attempt {attempt + 1})")
+                        await asyncio.sleep(wait_sec)
+                        continue
+                    response.raise_for_status()
+                except httpx.TimeoutException as exc:
+                    wait_sec = settings.overpass_retry_backoff_seconds * (2 ** attempt)
+                    attempted_errors.append(f"{endpoint} timed out (attempt {attempt + 1}): {exc}")
+                    await asyncio.sleep(wait_sec)
+                except httpx.HTTPError as exc:
+                    attempted_errors.append(f"{endpoint} HTTP error: {exc}")
+                    break
+
+        error_summary = "; ".join(attempted_errors) if attempted_errors else "No endpoints responded"
+        raise ProviderError(f"OpenStreetMap Overpass failed across {len(endpoints)} endpoint(s): {error_summary}")
+
+    async def _area_query(self, area_name: str, category_filter: str, radius: int) -> str:
+        settings = get_settings()
+        nominatim_host = urlparse(settings.nominatim_url).hostname or "nominatim"
+        last_error: Exception | None = None
+
+        for attempt in range(2):
+            await _provider_limiter.acquire(nominatim_host)
+            try:
+                async with httpx.AsyncClient(timeout=settings.nominatim_timeout_seconds) as client:
+                    response = await client.get(
+                        settings.nominatim_url,
+                        params={"q": f"{area_name}, Sri Lanka", "format": "jsonv2", "limit": 1},
+                        headers={"User-Agent": "LankaLead/0.1 (public-business-discovery)"},
+                    )
+                    response.raise_for_status()
+                    places = response.json()
+                if not places:
+                    raise ProviderLocationNotFoundError(f"OpenStreetMap could not locate {area_name}, Sri Lanka")
+                latitude = places[0].get("lat")
+                longitude = places[0].get("lon")
+                if not latitude or not longitude:
+                    raise ProviderLocationNotFoundError(f"OpenStreetMap returned no coordinates for {area_name}")
+                return f"nwr(around:{radius},{float(latitude)},{float(longitude)}){category_filter};"
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_error = exc
+                await asyncio.sleep(1.0)
+            except ProviderLocationNotFoundError:
+                raise
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"Nominatim geocoding error for {area_name}: {exc}") from exc
+
+        raise ProviderTimeoutError(f"Nominatim geocoding timed out for {area_name}: {last_error}")
+
+    async def check_health(self) -> ProviderHealth:
+        settings = get_settings()
+        endpoints = settings.overpass_url_list
+        nominatim_host = urlparse(settings.nominatim_url).hostname or "nominatim"
+        await _provider_limiter.acquire(nominatim_host)
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(
+                    settings.nominatim_url,
+                    params={"q": "Sri Lanka", "format": "jsonv2", "limit": 1},
+                    headers={"User-Agent": "LankaLead/0.1 (health-check)"},
+                )
+                res.raise_for_status()
+            return ProviderHealth(
+                provider_name=self.name,
+                is_healthy=True,
+                message="OpenStreetMap Nominatim and Overpass endpoints configured",
+                endpoints=tuple(endpoints),
+                last_checked=datetime.now(UTC).isoformat(),
+            )
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            return ProviderHealth(
+                provider_name=self.name,
+                is_healthy=False,
+                message=f"OpenStreetMap health check failed: {exc}",
+                endpoints=tuple(endpoints),
+                last_checked=datetime.now(UTC).isoformat(),
+            )
+
+    @staticmethod
+    def _to_business(
+        element: dict[str, object], category: str, province: str, district: str, city: str
+    ) -> SourceBusiness:
+        tags = element.get("tags", {})
+        if not isinstance(tags, dict):
+            tags = {}
+        center = element.get("center", {})
+        if not isinstance(center, dict):
+            center = {}
+        element_id = f"osm-{element.get('type', 'place')}-{element.get('id', 'unknown')}"
+        address = str(tags.get("addr:full") or " ".join(
+            str(tags[key]) for key in ("addr:housenumber", "addr:street", "addr:city")
+            if tags.get(key)
+        )).strip()
+        social_keys = (
+            ("Facebook", "contact:facebook"),
+            ("Instagram", "contact:instagram"),
+            ("LinkedIn", "contact:linkedin"),
+            ("LinkedIn", "linkedin"),
+            ("Twitter", "contact:twitter"),
+            ("YouTube", "contact:youtube"),
+        )
+        social_links_list = [
+            SocialLink(platform, str(tags[key]))
+            for platform, key in social_keys
+            if tags.get(key)
+        ]
+        wa_tag = str(tags.get("contact:whatsapp") or tags.get("whatsapp") or "")
+        if wa_tag:
+            clean_wa = re.sub(r"\D", "", wa_tag)
+            if clean_wa.startswith("07"):
+                clean_wa = f"94{clean_wa[1:]}"
+            social_links_list.append(SocialLink("WhatsApp", f"https://wa.me/{clean_wa}"))
+
+        raw_phone = (
+            tags.get("contact:phone")
+            or tags.get("phone")
+            or tags.get("contact:mobile")
+            or tags.get("mobile")
+            or tags.get("contact:whatsapp")
+            or tags.get("whatsapp")
+        )
+        phone: str | None = None
+        if raw_phone:
+            clean_p = str(raw_phone).strip()
+            if clean_p.lower() not in {"none", "null", "n/a", ""}:
+                phone = clean_p
+
+        raw_email = tags.get("contact:email") or tags.get("email")
+        email: str | None = None
+        if raw_email:
+            clean_e = str(raw_email).strip().lower()
+            if clean_e not in {"none", "null", "n/a", ""}:
+                email = clean_e
+
+        raw_web = tags.get("website") or tags.get("contact:website")
+        website: str | None = None
+        if raw_web:
+            clean_w = str(raw_web).strip()
+            if clean_w.lower() not in {"none", "null", "n/a", "no", ""}:
+                website = clean_w
+
+        raw_city = tags.get("addr:city") or city or ""
+        city_str = str(raw_city).strip() if raw_city and str(raw_city).lower() != "none" else ""
+
+        raw_district = tags.get("addr:district") or district or ""
+        district_str = str(raw_district).strip() if raw_district and str(raw_district).lower() != "none" else ""
+
+        province_str = province or ""
+        if province_str.lower() == "none":
+            province_str = ""
+
+        return SourceBusiness(
+            external_id=element_id,
+            name=str(tags["name"]),
+            category=category,
+            phone=phone,
+            address=address,
+            city=city_str,
+            district=district_str,
+            province=province_str,
+            website=website,
+            social_links=tuple(social_links_list),
+            email=email,
+        )
+
+
+class SriLankaDirectoryBusinessSource:
+    """Discovers Sri Lankan businesses and contacts from public national directory services."""
+    name = "Sri Lanka Directory (RainbowPages)"
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        loc_str = city or district or province or "Sri Lanka"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        url = "https://rainbowpages.lk/search.php"
+        params = {"s": category.lower(), "l": loc_str.lower()}
+        results: list[SourceBusiness] = []
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
+                resp = await client.get(url, params=params)
+                if resp.status_code == 200:
+                    hrefs = set(re.findall(r'href="([^"]+)"', resp.text))
+                    listing_pattern = re.compile(
+                        r"https://rainbowpages\.lk/[a-z0-9\-]+/[a-z0-9\-]+/([a-z0-9\-]+)/?", re.IGNORECASE
+                    )
+                    slugs_seen: set[str] = set()
+                    listing_urls: list[str] = []
+                    for h in hrefs:
+                        m = listing_pattern.match(h)
+                        if m:
+                            slug = m.group(1).lower()
+                            if slug not in slugs_seen and slug not in {"advertising", "help", "about", "contact"}:
+                                slugs_seen.add(slug)
+                                listing_urls.append(h)
+                                if len(listing_urls) >= 12:
+                                    break
+
+                    tasks = [client.get(u) for u in listing_urls[:6]]
+                    pages = await asyncio.gather(*tasks, return_exceptions=True)
+                    for u, page in zip(listing_urls[:6], pages):
+                        if isinstance(page, httpx.Response) and page.status_code == 200:
+                            title_m = re.search(r"<title>(.*?)(?:-|–|\|) Rainbowpages</title>", page.text, re.IGNORECASE)
+                            raw_name = title_m.group(1).strip() if title_m else None
+                            if not raw_name:
+                                continue
+                            phones = set(re.findall(r"(?:\+94|0)\s*\d{2}\s*\d{3}\s*\d{4}", page.text))
+                            phone = next(iter(phones)) if phones else None
+
+                            web_candidates = set(re.findall(
+                                r'href="(https?://(?!www\.rainbowpages|rainbowpages|www\.facebook|www\.youtube|www\.instagram|www\.linkedin|twitter\.com)[^"]+)"',
+                                page.text,
+                            ))
+                            filtered_web = [
+                                w for w in web_candidates
+                                if not any(ex in w for ex in ("touristdirectory", "weddingdirectory", "slt.lk", "beyondm"))
+                            ]
+                            website = filtered_web[0] if filtered_web else None
+
+                            socials: list[SocialLink] = []
+                            fb = re.search(r'href="(https?://(?:www\.)?facebook\.com/[^"]+)"', page.text)
+                            if fb and "rainbowpages" not in fb.group(1):
+                                socials.append(SocialLink("Facebook", fb.group(1)))
+                            li = re.search(r'href="(https?://(?:www\.)?linkedin\.com/company/[^"]+)"', page.text)
+                            if li and "rainbowpages" not in li.group(1):
+                                socials.append(SocialLink("LinkedIn", li.group(1)))
+
+                            emails = set(re.findall(r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7})', page.text, re.IGNORECASE))
+                            email = next(iter(emails)).lower() if emails else None
+
+                            slug_id = u.rstrip("/").split("/")[-1]
+                            results.append(SourceBusiness(
+                                external_id=f"rp-{slug_id}",
+                                name=raw_name,
+                                category=category,
+                                phone=phone,
+                                address=f"{loc_str}, Sri Lanka",
+                                city=city or loc_str,
+                                district=district or loc_str,
+                                province=province or "Sri Lanka",
+                                website=website,
+                                social_links=tuple(socials),
+                                email=email,
+                            ))
+        except (httpx.HTTPError, OSError, ValueError):
+            return results
+        return results
+
+    async def check_health(self) -> ProviderHealth:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                res = await client.head("https://www.rainbowpages.lk", headers={"User-Agent": "Mozilla/5.0"})
+                healthy = res.status_code < 400
+        except (httpx.HTTPError, OSError):
+            healthy = False
+        return ProviderHealth(
+            provider_name=self.name,
+            is_healthy=healthy,
+            message="National Directory Service is reachable" if healthy else "National Directory Service unreachable",
+            endpoints=("https://www.rainbowpages.lk",),
+            last_checked=datetime.now(UTC).isoformat(),
+        )
+
+
+class DuckDuckGoSearchBusinessSource:
+    """Discovers Sri Lankan businesses, websites, and LinkedIn company presence via search."""
+    name = "Public Web & LinkedIn Search Discovery"
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        loc_str = city or district or province or "Sri Lanka"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        results: list[SourceBusiness] = []
+        query = f'"{category}" "{loc_str}" Sri Lanka site:linkedin.com/company'
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
+                resp = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
+                if resp.status_code == 200:
+                    matches = re.findall(
+                        r'<a\s+class="result__url"\s+href="([^"]+)"[^>]*>\s*([^<]+)</a>', resp.text
+                    )
+                    for idx, (href, _) in enumerate(matches[:10]):
+                        parsed = urlparse("https:" + href if href.startswith("//") else href)
+                        qs = urllib.parse.parse_qs(parsed.query)
+                        target = qs.get("uddg", [href])[0]
+                        if "linkedin.com/company/" in target:
+                            slug = target.rstrip("/").split("/")[-1].replace("-", " ").title()
+                            results.append(SourceBusiness(
+                                external_id=f"li-search-{idx}-{abs(hash(target)) % 100000}",
+                                name=slug,
+                                category=category,
+                                phone=None,
+                                address=f"{loc_str}, Sri Lanka",
+                                city=city or loc_str,
+                                district=district or loc_str,
+                                province=province or "Sri Lanka",
+                                website=None,
+                                social_links=(SocialLink("LinkedIn", target),),
+                            ))
+        except (httpx.HTTPError, OSError, ValueError):
+            return results
+        return results
+
+    async def check_health(self) -> ProviderHealth:
+        return ProviderHealth(
+            provider_name=self.name,
+            is_healthy=True,
+            message="Search & LinkedIn Discovery active",
+            endpoints=("https://html.duckduckgo.com/html/",),
+            last_checked=datetime.now(UTC).isoformat(),
+        )
+
+
+class CompositeBusinessSource:
+    """Combines OpenStreetMap, Sri Lanka Directory, and LinkedIn Search into a unified deduplicated source."""
+    name = "Composite (OpenStreetMap + Directory + LinkedIn Search)"
+
+    def __init__(self) -> None:
+        self.osm = OpenStreetMapBusinessSource()
+        self.directory = SriLankaDirectoryBusinessSource()
+        self.search = DuckDuckGoSearchBusinessSource()
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        results_group = await asyncio.gather(
+            self.osm.search_businesses(province=province, district=district, city=city, category=category),
+            self.directory.search_businesses(province=province, district=district, city=city, category=category),
+            self.search.search_businesses(province=province, district=district, city=city, category=category),
+            return_exceptions=True,
+        )
+        combined: list[SourceBusiness] = []
+        for r in results_group:
+            if isinstance(r, list):
+                combined.extend(r)
+
+        # Merge and deduplicate by normalized business name
+        by_norm_name: dict[str, SourceBusiness] = {}
+        for b in combined:
+            norm = re.sub(r"[^a-z0-9]+", "", b.name.lower())
+            if not norm:
+                continue
+            if norm not in by_norm_name:
+                by_norm_name[norm] = b
+            else:
+                existing = by_norm_name[norm]
+                merged_phone = existing.phone or b.phone
+                merged_email = existing.email or b.email
+                merged_website = existing.website or b.website
+                seen_social_urls = {s.url for s in existing.social_links}
+                merged_socials = list(existing.social_links)
+                for s in b.social_links:
+                    if s.url not in seen_social_urls:
+                        seen_social_urls.add(s.url)
+                        merged_socials.append(s)
+                by_norm_name[norm] = SourceBusiness(
+                    external_id=existing.external_id,
+                    name=existing.name,
+                    category=existing.category,
+                    phone=merged_phone,
+                    address=existing.address or b.address,
+                    city=existing.city or b.city,
+                    district=existing.district or b.district,
+                    province=existing.province or b.province,
+                    website=merged_website,
+                    social_links=tuple(merged_socials),
+                    email=merged_email,
+                )
+        return list(by_norm_name.values())
+
+    async def check_health(self) -> ProviderHealth:
+        osm_health = await self.osm.check_health()
+        return ProviderHealth(
+            provider_name=self.name,
+            is_healthy=osm_health.is_healthy,
+            message="Composite provider active (OSM + Directory + LinkedIn Search)",
+            endpoints=osm_health.endpoints + ("https://rainbowpages.lk", "https://html.duckduckgo.com"),
+            last_checked=datetime.now(UTC).isoformat(),
+        )
+
+
+def get_business_source() -> BusinessSource:
+    name = get_settings().provider_name.casefold()
+    if name == "mock":
+        return MockBusinessSource()
+    if name == "osm":
+        return OpenStreetMapBusinessSource()
+    if name in {"composite", "all", "multi"}:
+        return CompositeBusinessSource()
+    if name in {"directory", "rainbowpages"}:
+        return SriLankaDirectoryBusinessSource()
+    if name in {"search", "ddg", "linkedin"}:
+        return DuckDuckGoSearchBusinessSource()
+    raise ValueError(f"Unsupported business provider: {name}")
