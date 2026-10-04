@@ -3,12 +3,18 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from app.main import app, lifespan
 
 
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+async def init_db() -> None:
+    async with lifespan(app):
+        yield
 
 
 @pytest.mark.asyncio
@@ -108,8 +114,73 @@ async def test_businesses_and_exports() -> None:
         assert csv_res.status_code == 200
         assert "text/csv" in csv_res.headers.get("content-type", "")
         assert "email" in csv_res.text
+        assert "lead_priority" in csv_res.text
+        assert "whatsapp_link" in csv_res.text
+        assert "outreach_status" in csv_res.text
 
         # Export JSON
         json_res = await client.get("/api/exports/businesses.json", headers=headers)
         assert json_res.status_code == 200
         assert isinstance(json_res.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_outreach_pipeline_and_lead_metrics() -> None:
+    unique_email = f"sales_{uuid4().hex[:8]}@example.com"
+    password = "SalesPassword123"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        reg = await client.post("/api/auth/register", json={"email": unique_email, "password": password})
+        token = reg.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Check lead metrics endpoint
+        metrics_res = await client.get("/api/lead-metrics", headers=headers)
+        assert metrics_res.status_code == 200
+        m = metrics_res.json()
+        assert "total_leads" in m
+        assert "prime_targets" in m
+        assert "social_only" in m
+        assert "pipeline_new" in m
+        assert "pipeline_contacted" in m
+        assert "pipeline_won" in m
+
+        # Fetch a business to update outreach status
+        biz_list = await client.get("/api/businesses?page=1&page_size=1", headers=headers)
+        assert biz_list.status_code == 200
+        biz_data = biz_list.json()["data"]
+        if biz_data:
+            biz_id = biz_data[0]["id"]
+
+            # Update outreach status to CONTACTED and add notes
+            patch_res = await client.patch(
+                f"/api/businesses/{biz_id}/outreach",
+                headers=headers,
+                json={"outreach_status": "CONTACTED", "outreach_notes": "Spoke with owner, requested website package details."},
+            )
+            assert patch_res.status_code == 200
+            updated = patch_res.json()
+            assert updated["outreach_status"] == "CONTACTED"
+            assert updated["outreach_notes"] == "Spoke with owner, requested website package details."
+            assert updated["last_contacted_at"] is not None
+
+            # Verify in detail view
+            detail_res = await client.get(f"/api/businesses/{biz_id}", headers=headers)
+            assert detail_res.status_code == 200
+            detail = detail_res.json()
+            assert detail["outreach_status"] == "CONTACTED"
+            assert detail["outreach_notes"] == "Spoke with owner, requested website package details."
+
+            # Test invalid outreach status rejected
+            bad_status = await client.patch(
+                f"/api/businesses/{biz_id}/outreach",
+                headers=headers,
+                json={"outreach_status": "INVALID_STATUS"},
+            )
+            assert bad_status.status_code == 400
+
+            # Filter businesses by outreach_status
+            filtered = await client.get("/api/businesses?outreach_status=CONTACTED", headers=headers)
+            assert filtered.status_code == 200
+            assert any(b["id"] == biz_id for b in filtered.json()["data"])
+

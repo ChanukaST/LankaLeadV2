@@ -43,6 +43,15 @@ class WebsiteStatus(str, Enum):
     SOCIAL_ONLY = "SOCIAL_ONLY"
 
 
+class OutreachStatus(str, Enum):
+    NEW = "NEW"
+    CONTACTED = "CONTACTED"
+    FOLLOW_UP = "FOLLOW_UP"
+    PROPOSAL_SENT = "PROPOSAL_SENT"
+    WON = "WON"
+    NOT_INTERESTED = "NOT_INTERESTED"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -92,6 +101,9 @@ class Business(Base):
     category_id: Mapped[UUID] = mapped_column(ForeignKey("categories.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    outreach_status: Mapped[str] = mapped_column(String(50), default="NEW", index=True)
+    outreach_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     category: Mapped[Category] = relationship()
 
 

@@ -81,6 +81,27 @@ class BusinessResponse(BaseModel):
     discovery_evidence: str | None = None
     sources: list[dict[str, object]] = []
     social_profiles: list[dict[str, object]] = []
+    outreach_status: str = "NEW"
+    outreach_notes: str | None = None
+    last_contacted_at: datetime | None = None
+
+
+class OutreachUpdateRequest(BaseModel):
+    outreach_status: str | None = None
+    outreach_notes: str | None = None
+
+
+class LeadMetricsResponse(BaseModel):
+    total_leads: int
+    prime_targets: int
+    social_only: int
+    no_website: int
+    pipeline_new: int
+    pipeline_contacted: int
+    pipeline_follow_up: int
+    pipeline_proposal: int
+    pipeline_won: int
+    pipeline_not_interested: int
 
 
 class BusinessDetailResponse(BusinessResponse):

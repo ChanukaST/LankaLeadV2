@@ -4,14 +4,17 @@ import {
   AlertCircle,
   Building2,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Clipboard,
   Compass,
   Download,
   ExternalLink,
+  FileText,
   Filter,
   Globe,
   HelpCircle,
@@ -20,10 +23,15 @@ import {
   MapPin,
   MessageSquare,
   Phone,
+  PhoneCall,
   RefreshCw,
   Search,
+  Send,
   Shield,
+  Sparkles,
   Table,
+  Target,
+  Trophy,
   X,
   XCircle,
 } from "lucide-react";
@@ -64,21 +72,74 @@ type Business = {
   discovery_evidence?: string;
   sources?: { name: string; external_id: string; source_url?: string; confidence?: number }[];
   social_profiles?: { platform: string; profile_url: string }[];
+  outreach_status?: string;
+  outreach_notes?: string;
+  last_contacted_at?: string;
 };
 
-function getWhatsAppUrl(phone?: string): string | null {
+type LeadMetrics = {
+  total_leads: number;
+  prime_targets: number;
+  social_only: number;
+  no_website: number;
+  pipeline_new: number;
+  pipeline_contacted: number;
+  pipeline_follow_up: number;
+  pipeline_proposal: number;
+  pipeline_won: number;
+  pipeline_not_interested: number;
+};
+
+const OUTREACH_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: string }> = {
+  NEW: { label: "New Lead", color: "#475569", bg: "#f1f5f9", icon: "✨" },
+  CONTACTED: { label: "Contacted", color: "#1d4ed8", bg: "#eff6ff", icon: "📞" },
+  FOLLOW_UP: { label: "Follow-Up", color: "#b45309", bg: "#fef3c7", icon: "⏳" },
+  PROPOSAL_SENT: { label: "Proposal Sent", color: "#7e22ce", bg: "#f3e8ff", icon: "📄" },
+  WON: { label: "Deal Won 🎉", color: "#15803d", bg: "#dcfce7", icon: "🏆" },
+  NOT_INTERESTED: { label: "Not Interested", color: "#b91c1c", bg: "#fee2e2", icon: "✖️" },
+};
+
+function getWhatsAppUrl(phone?: string, customText?: string): string | null {
   if (!phone) return null;
   const digits = phone.replace(/\D/g, "");
+  let formatted = "";
   if (digits.startsWith("947") && digits.length === 11) {
-    return `https://wa.me/${digits}`;
+    formatted = digits;
+  } else if (digits.startsWith("07") && digits.length === 10) {
+    formatted = `94${digits.slice(1)}`;
+  } else if (digits.startsWith("7") && digits.length === 9) {
+    formatted = `94${digits}`;
+  } else if (digits.length >= 9) {
+    formatted = digits;
   }
-  if (digits.startsWith("07") && digits.length === 10) {
-    return `https://wa.me/94${digits.slice(1)}`;
-  }
-  if (digits.startsWith("7") && digits.length === 9) {
-    return `https://wa.me/94${digits}`;
-  }
-  return null;
+  if (!formatted) return null;
+  const baseUrl = `https://wa.me/${formatted}`;
+  return customText ? `${baseUrl}?text=${encodeURIComponent(customText)}` : baseUrl;
+}
+
+function generateColdPitch(biz: Business): { english: string; whatsapp: string } {
+  const cat = biz.category || "business";
+  const loc = [biz.city, biz.district].filter(Boolean).join(", ") || "Sri Lanka";
+
+  const english = `Hello! Is this the manager or owner of ${biz.name}?
+
+I was looking for ${cat} in ${loc} and came across your profile. You have great local visibility, but when customers search online, you don't have an official website or menu/services catalog yet.
+
+We build modern, mobile-friendly websites specifically for Sri Lankan ${cat} businesses to help you capture direct orders, customer inquiries, and rank higher on Google Maps.
+
+Would you be open to a quick 2-minute chat, or could I send you a 1-minute free preview over WhatsApp?`;
+
+  const whatsapp = `Ayubowan / Hello ${biz.name} team! 🙏
+
+I noticed that your business (${cat} in ${loc}) doesn't have an official website yet.
+
+Today, over 80% of customers search on Google and social media before visiting or ordering. We build affordable, high-converting websites and Google Maps setups tailored for Sri Lankan businesses so you can receive direct customer inquiries, bookings, and payments.
+
+Would you like to see a free quick mockup website we could create for ${biz.name}?
+
+Looking forward to hearing from you!`;
+
+  return { english, whatsapp };
 }
 
 const SRI_LANKA_PROVINCES = [
@@ -212,6 +273,65 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function OutreachBadge({
+  status,
+  onChange,
+  disabled,
+}: {
+  status?: string;
+  onChange?: (newStatus: string) => void;
+  disabled?: boolean;
+}) {
+  const norm = (status || "NEW").toUpperCase();
+  const cfg = OUTREACH_STATUS_CONFIG[norm] || OUTREACH_STATUS_CONFIG.NEW;
+
+  if (!onChange) {
+    return (
+      <span
+        className="badge"
+        style={{
+          background: cfg.bg,
+          color: cfg.color,
+          borderColor: cfg.color + "40",
+          fontWeight: 700,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "4px",
+        }}
+      >
+        <span>{cfg.icon}</span>
+        <span>{cfg.label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <select
+      className="outreach-select"
+      value={norm}
+      disabled={disabled}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        e.stopPropagation();
+        onChange(e.target.value);
+      }}
+      style={{
+        background: cfg.bg,
+        color: cfg.color,
+        borderColor: cfg.color + "60",
+      }}
+      title="Click to update sales pipeline status"
+    >
+      <option value="NEW">✨ New Lead</option>
+      <option value="CONTACTED">📞 Contacted</option>
+      <option value="FOLLOW_UP">⏳ Follow-Up</option>
+      <option value="PROPOSAL_SENT">📄 Proposal Sent</option>
+      <option value="WON">🏆 Won / Closed 🎉</option>
+      <option value="NOT_INTERESTED">✖️ Not Interested</option>
+    </select>
+  );
+}
+
 function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -220,6 +340,20 @@ function App() {
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessDetail | null>(null);
   const [inspectingDiscovery, setInspectingDiscovery] = useState<Business | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+
+  // Outreach & Lead CRM state
+  const [leadMetrics, setLeadMetrics] = useState<LeadMetrics | null>(null);
+  const [quickSegment, setQuickSegment] = useState<"all" | "prime" | "social" | "pipeline" | "won" | "not_interested">("all");
+  const [filterOutreachStatus, setFilterOutreachStatus] = useState("");
+  const [filterPrimeLeads, setFilterPrimeLeads] = useState(false);
+  const [filterSocialOnly, setFilterSocialOnly] = useState(false);
+
+  // Outreach editing state in Modal
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingOutreach, setSavingOutreach] = useState(false);
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState("");
+  const [copiedPitch, setCopiedPitch] = useState(false);
+  const [pitchTab, setPitchTab] = useState<"whatsapp" | "call">("whatsapp");
 
   // Filters
   const [categoryId, setCategoryId] = useState("");
@@ -339,6 +473,22 @@ function App() {
     }
   };
 
+  const loadLeadMetrics = async () => {
+    if (!authenticated) return;
+    try {
+      const data = await api<LeadMetrics>("/lead-metrics");
+      setLeadMetrics(data);
+    } catch {
+      // silent
+    }
+  };
+
+  useEffect(() => {
+    if (authenticated) {
+      loadLeadMetrics();
+    }
+  }, [authenticated]);
+
   const loadBusinesses = async (pageToLoad: number = page) => {
     try {
       const params = new URLSearchParams({
@@ -352,6 +502,9 @@ function App() {
       if (filterDistrict) params.set("district", filterDistrict);
       if (filterCity) params.set("city", filterCity);
       if (filterStatus) params.set("website_status", filterStatus);
+      if (filterOutreachStatus) params.set("outreach_status", filterOutreachStatus);
+      if (filterPrimeLeads) params.set("prime_leads", "true");
+      if (filterSocialOnly) params.set("social_only", "true");
       if (filterRunId) params.set("run_id", filterRunId);
       if (filterSource) params.set("source_name", filterSource);
       if (search) params.set("search", search);
@@ -371,7 +524,92 @@ function App() {
     if (authenticated) {
       loadBusinesses(1);
     }
-  }, [authenticated, filterCategory, filterProvince, filterDistrict, filterCity, filterStatus, filterRunId, filterSource, sortBy, sortOrder, pageSize]);
+  }, [authenticated, filterCategory, filterProvince, filterDistrict, filterCity, filterStatus, filterOutreachStatus, filterPrimeLeads, filterSocialOnly, filterRunId, filterSource, sortBy, sortOrder, pageSize]);
+
+  const updateBusinessOutreach = async (businessId: string, status?: string, notes?: string) => {
+    try {
+      setSavingOutreach(true);
+      const body: { outreach_status?: string; outreach_notes?: string } = {};
+      if (status) body.outreach_status = status;
+      if (notes !== undefined) body.outreach_notes = notes;
+
+      const updated = await api<Business>(`/businesses/${businessId}/outreach`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+
+      setBusinesses((prev) =>
+        prev.map((b) =>
+          b.id === businessId
+            ? {
+                ...b,
+                outreach_status: updated.outreach_status,
+                outreach_notes: updated.outreach_notes,
+                last_contacted_at: updated.last_contacted_at,
+              }
+            : b
+        )
+      );
+
+      if (selectedBusiness && selectedBusiness.id === businessId) {
+        setSelectedBusiness((prev) =>
+          prev
+            ? {
+                ...prev,
+                outreach_status: updated.outreach_status,
+                outreach_notes: updated.outreach_notes,
+                last_contacted_at: updated.last_contacted_at,
+              }
+            : null
+        );
+        setSaveSuccessMessage("Saved!");
+        setTimeout(() => setSaveSuccessMessage(""), 2500);
+      }
+
+      loadLeadMetrics();
+      return updated;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to update outreach");
+      return null;
+    } finally {
+      setSavingOutreach(false);
+    }
+  };
+
+  const selectQuickSegment = (segment: "all" | "prime" | "social" | "pipeline" | "won" | "not_interested") => {
+    setQuickSegment(segment);
+    if (segment === "all") {
+      setFilterPrimeLeads(false);
+      setFilterSocialOnly(false);
+      setFilterStatus("");
+      setFilterOutreachStatus("");
+    } else if (segment === "prime") {
+      setFilterPrimeLeads(true);
+      setFilterSocialOnly(false);
+      setFilterStatus("");
+      setFilterOutreachStatus("");
+    } else if (segment === "social") {
+      setFilterPrimeLeads(false);
+      setFilterSocialOnly(true);
+      setFilterStatus("SOCIAL_ONLY");
+      setFilterOutreachStatus("");
+    } else if (segment === "pipeline") {
+      setFilterPrimeLeads(false);
+      setFilterSocialOnly(false);
+      setFilterStatus("");
+      setFilterOutreachStatus("CONTACTED");
+    } else if (segment === "won") {
+      setFilterPrimeLeads(false);
+      setFilterSocialOnly(false);
+      setFilterStatus("");
+      setFilterOutreachStatus("WON");
+    } else if (segment === "not_interested") {
+      setFilterPrimeLeads(false);
+      setFilterSocialOnly(false);
+      setFilterStatus("");
+      setFilterOutreachStatus("NOT_INTERESTED");
+    }
+  };
 
   const startDiscovery = async () => {
     if (!categoryId) {
@@ -428,6 +666,7 @@ function App() {
       setRuns(updated);
       if (updated.some((run) => run.status === "COMPLETED")) {
         loadBusinesses();
+        loadLeadMetrics();
       }
     }, 1500);
     return () => window.clearInterval(timer);
@@ -441,6 +680,9 @@ function App() {
     if (filterDistrict) params.set("district", filterDistrict);
     if (filterCity) params.set("city", filterCity);
     if (filterStatus) params.set("website_status", filterStatus);
+    if (filterOutreachStatus) params.set("outreach_status", filterOutreachStatus);
+    if (filterPrimeLeads) params.set("prime_leads", "true");
+    if (filterSocialOnly) params.set("social_only", "true");
     if (filterRunId) params.set("run_id", filterRunId);
     if (filterSource) params.set("source_name", filterSource);
     if (search) params.set("search", search);
@@ -456,7 +698,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `lankalead-businesses.${format}`;
+    anchor.download = format === "csv" ? `lankalead-telesales-calling-sheet.csv` : `lankalead-businesses.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -465,6 +707,8 @@ function App() {
     try {
       const data = await api<BusinessDetail>(`/businesses/${businessId}`);
       setSelectedBusiness(data);
+      setNotesDraft(data.outreach_notes || "");
+      setSaveSuccessMessage("");
       window.location.hash = `#/business/${businessId}`;
     } catch {
       setMessage("Unable to load business profile.");
@@ -483,6 +727,10 @@ function App() {
     setFilterCity("");
     setFilterCategory("");
     setFilterStatus("");
+    setFilterOutreachStatus("");
+    setFilterPrimeLeads(false);
+    setFilterSocialOnly(false);
+    setQuickSegment("all");
     setFilterRunId("");
     setFilterSource("");
     setSortBy("created_at");
@@ -523,16 +771,17 @@ function App() {
           <th>Business Name</th>
           <th>Category</th>
           <th>Location</th>
-          <th>Contact</th>
+          <th>Contact & Direct Pitch</th>
           <th>Website Candidate</th>
           <th>Presence Status</th>
           <th>Found Via</th>
+          <th>Sales Pipeline</th>
         </tr>
       </thead>
       <tbody>
         {items.length === 0 ? (
           <tr>
-            <td colSpan={7} style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)" }}>
+            <td colSpan={8} style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)" }}>
               No business records match the current filters. Run a discovery or adjust search criteria.
             </td>
           </tr>
@@ -567,7 +816,7 @@ function App() {
                 <td>
                   <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                     {biz.phone ? (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                         <Phone size={12} style={{ color: "var(--primary)", flexShrink: 0 }} />
                         <a
                           href={`tel:${biz.phone}`}
@@ -578,14 +827,14 @@ function App() {
                         </a>
                         {getWhatsAppUrl(biz.phone) && (
                           <a
-                            href={getWhatsAppUrl(biz.phone)!}
+                            href={getWhatsAppUrl(biz.phone, generateColdPitch(biz).whatsapp)!}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="whatsapp-badge"
-                            title="Chat on WhatsApp"
+                            title="Send pre-filled cold outreach pitch to this business on WhatsApp"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <MessageSquare size={11} /> WA
+                            <MessageSquare size={11} /> Pitch WA
                           </a>
                         )}
                       </div>
@@ -660,6 +909,28 @@ function App() {
                     </button>
                   </div>
                 </td>
+                <td>
+                  <OutreachBadge
+                    status={biz.outreach_status}
+                    onChange={(newStatus) => updateBusinessOutreach(biz.id, newStatus)}
+                  />
+                  {biz.outreach_notes && (
+                    <div
+                      style={{
+                        fontSize: "0.72rem",
+                        color: "var(--text-muted)",
+                        marginTop: "4px",
+                        maxWidth: "150px",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={biz.outreach_notes}
+                    >
+                      📝 {biz.outreach_notes}
+                    </div>
+                  )}
+                </td>
               </tr>
             );
           })
@@ -674,8 +945,8 @@ function App() {
     <main>
       <header>
         <div className="header-titles">
-          <p className="eyebrow">LankaLead · Business Discovery</p>
-          <h1>Sri Lankan business presence grounded in evidence.</h1>
+          <p className="eyebrow">LankaLead · Sales Prospecting & Outreach CRM</p>
+          <h1>Sri Lankan business presence & cold outreach engine.</h1>
           <div className="header-meta">
             {providerStatus && (
               <span className="provider-indicator">
@@ -683,12 +954,12 @@ function App() {
                 <span>Provider: {providerStatus.provider_name} ({providerStatus.is_healthy ? "Online" : "Degraded"})</span>
               </span>
             )}
-            <span>Evidence-based · No speculative assumptions</span>
+            <span>Internal Sales Pipeline · Converting offline businesses to digital clients</span>
           </div>
         </div>
         <div className="actions">
-          <button className="secondary" onClick={() => exportFiltered("csv")}>
-            <Download size={14} /> Export CSV
+          <button onClick={() => exportFiltered("csv")} title="Download pre-formatted tele-sales calling sheet with WhatsApp links">
+            <PhoneCall size={14} /> Calling Sheet (CSV)
           </button>
           <button className="secondary" onClick={() => exportFiltered("json")}>
             <Download size={14} /> Export JSON
@@ -803,25 +1074,102 @@ function App() {
         )}
       </section>
 
-      {/* KPI Stats */}
+      {/* Sales Pipeline & Outreach KPI Stats */}
       <section className="stats">
-        <article>
-          <strong>{totalItems}</strong>
-          <span>Total Discovered Businesses</span>
+        <article
+          onClick={() => selectQuickSegment("all")}
+          title="Click to view all discovered leads"
+        >
+          <strong>{leadMetrics?.total_leads ?? totalItems}</strong>
+          <span>Total Discovered Leads</span>
         </article>
-        <article>
-          <strong>{businesses.filter((b) => b.website_status === "WEBSITE_FOUND").length}</strong>
-          <span>Websites Found (Current Page)</span>
+        <article
+          className="prime-target-card"
+          onClick={() => selectQuickSegment("prime")}
+          title="Click to view Prime Calling Targets (No website + Phone)"
+        >
+          <strong>🎯 {leadMetrics?.prime_targets ?? 0}</strong>
+          <span>Prime Targets (No Website + Phone)</span>
         </article>
-        <article>
-          <strong>{businesses.filter((b) => b.website_status === "SOCIAL_ONLY").length}</strong>
-          <span>Social Presence Only</span>
+        <article
+          className="social-card"
+          onClick={() => selectQuickSegment("social")}
+          title="Click to view businesses with social presence but no website"
+        >
+          <strong>📱 {leadMetrics?.social_only ?? 0}</strong>
+          <span>Social Presence Only (High Upsell)</span>
         </article>
-        <article>
-          <strong>{businesses.filter((b) => b.website_status === "WEBSITE_NOT_DETECTED").length}</strong>
-          <span>Website Not Detected</span>
+        <article
+          className="pipeline-card"
+          onClick={() => selectQuickSegment("pipeline")}
+          title="Click to view leads in active outreach pipeline"
+        >
+          <strong>📞 {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}</strong>
+          <span>In Active Outreach Pipeline</span>
+        </article>
+        <article
+          className="won-card"
+          onClick={() => selectQuickSegment("won")}
+          title="Click to view closed won website design deals"
+        >
+          <strong>🏆 {leadMetrics?.pipeline_won ?? 0}</strong>
+          <span>Website Deals Won 🎉</span>
         </article>
       </section>
+
+      {/* Quick Pipeline Segment Tabs */}
+      <div className="pipeline-tabs">
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "all" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("all")}
+        >
+          <span>All Leads</span>
+          <span className="tab-badge">{leadMetrics?.total_leads ?? totalItems}</span>
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "prime" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("prime")}
+        >
+          <span>⚡ Prime Calling List</span>
+          <span className="tab-badge">{leadMetrics?.prime_targets ?? 0}</span>
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "social" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("social")}
+        >
+          <span>📱 Social Only</span>
+          <span className="tab-badge">{leadMetrics?.social_only ?? 0}</span>
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "pipeline" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("pipeline")}
+        >
+          <span>📞 Contacted / In Pipeline</span>
+          <span className="tab-badge">
+            {(leadMetrics?.pipeline_contacted ?? 0) + (leadMetrics?.pipeline_follow_up ?? 0) + (leadMetrics?.pipeline_proposal ?? 0)}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "won" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("won")}
+        >
+          <span>🏆 Deals Won</span>
+          <span className="tab-badge">{leadMetrics?.pipeline_won ?? 0}</span>
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab ${quickSegment === "not_interested" ? "active" : ""}`}
+          onClick={() => selectQuickSegment("not_interested")}
+        >
+          <span>✖️ Not Interested</span>
+          <span className="tab-badge">{leadMetrics?.pipeline_not_interested ?? 0}</span>
+        </button>
+      </div>
 
       {/* Filter Toolbar */}
       <section className="filter-toolbar">
@@ -843,6 +1191,18 @@ function App() {
                 {c.name}
               </option>
             ))}
+          </select>
+        </div>
+        <div>
+          <label>Outreach Stage</label>
+          <select value={filterOutreachStatus} onChange={(e) => setFilterOutreachStatus(e.target.value)}>
+            <option value="">All Stages</option>
+            <option value="NEW">✨ New Leads</option>
+            <option value="CONTACTED">📞 Contacted</option>
+            <option value="FOLLOW_UP">⏳ Follow-Up Needed</option>
+            <option value="PROPOSAL_SENT">📄 Proposal Sent</option>
+            <option value="WON">🏆 Deals Won 🎉</option>
+            <option value="NOT_INTERESTED">✖️ Not Interested</option>
           </select>
         </div>
         <div>
@@ -881,6 +1241,8 @@ function App() {
             <option value="name:desc">Name (Z-A)</option>
             <option value="city:asc">City (A-Z)</option>
             <option value="website_status:asc">Website Status</option>
+            <option value="outreach_status:asc">Outreach Stage</option>
+            <option value="last_contacted_at:desc">Recently Contacted</option>
           </select>
         </div>
         <div className="actions">
@@ -1105,6 +1467,157 @@ function App() {
                 </div>
               )}
             </div>
+
+            {/* Sales Outreach & Pipeline Status CRM Card */}
+            <div className="info-card" style={{ marginBottom: "16px", border: "1px solid #cce3d5", background: "#f8fbf9" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
+                <div>
+                  <h4 style={{ margin: 0, color: "#112820", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>🎯 Tele-Sales Pipeline Stage</span>
+                    <OutreachBadge status={selectedBusiness.outreach_status} />
+                  </h4>
+                  {selectedBusiness.last_contacted_at && (
+                    <span style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: "3px", display: "inline-block" }}>
+                      Last outreach activity: {new Date(selectedBusiness.last_contacted_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {(["NEW", "CONTACTED", "FOLLOW_UP", "PROPOSAL_SENT", "WON", "NOT_INTERESTED"] as const).map((st) => {
+                    const isCurrent = (selectedBusiness.outreach_status || "NEW").toUpperCase() === st;
+                    const cfg = OUTREACH_STATUS_CONFIG[st];
+                    return (
+                      <button
+                        key={st}
+                        type="button"
+                        disabled={savingOutreach}
+                        onClick={() => updateBusinessOutreach(selectedBusiness.id, st)}
+                        className={`button small ${isCurrent ? "" : "secondary"}`}
+                        style={{
+                          padding: "4px 10px",
+                          fontSize: "0.75rem",
+                          borderRadius: "6px",
+                          background: isCurrent ? cfg.color : "white",
+                          borderColor: cfg.color + "80",
+                          color: isCurrent ? "white" : cfg.color,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {cfg.icon} {cfg.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Call notes / activity log */}
+              <div>
+                <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>Outreach Activity Notes & Call Log</span>
+                  {saveSuccessMessage && (
+                    <span style={{ color: "#16a34a", fontSize: "0.75rem", textTransform: "none" }}>
+                      ✓ {saveSuccessMessage}
+                    </span>
+                  )}
+                </label>
+                <textarea
+                  className="notes-box"
+                  placeholder="Log call outcome, owner name, objections, meeting time, or quote details..."
+                  value={notesDraft}
+                  onChange={(e) => setNotesDraft(e.target.value)}
+                />
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
+                  <button
+                    type="button"
+                    className="button small"
+                    disabled={savingOutreach}
+                    onClick={() => updateBusinessOutreach(selectedBusiness.id, undefined, notesDraft)}
+                  >
+                    {savingOutreach ? <RefreshCw className="spin" size={13} /> : <Check size={13} />}
+                    Save Call Notes
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 1-Click WhatsApp Pitch & Tele-Sales Cold Script Generator */}
+            {(() => {
+              const pitch = generateColdPitch(selectedBusiness);
+              const currentScript = pitchTab === "whatsapp" ? pitch.whatsapp : pitch.english;
+              return (
+                <div className="pitch-card" style={{ marginBottom: "16px" }}>
+                  <div className="pitch-header">
+                    <div>
+                      <strong style={{ fontSize: "0.95rem", color: "#112820", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <Sparkles size={16} style={{ color: "var(--primary)" }} />
+                        1-Click Cold Outreach & Pitch Generator
+                      </strong>
+                      <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                        Tailored specifically for Sri Lankan {selectedBusiness.category} in {selectedBusiness.city || selectedBusiness.district}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                      {selectedBusiness.phone && (
+                        <a
+                          href={`tel:${selectedBusiness.phone}`}
+                          className="button small secondary"
+                          title="Dial phone number now"
+                        >
+                          <PhoneCall size={13} /> Call {selectedBusiness.phone}
+                        </a>
+                      )}
+                      {getWhatsAppUrl(selectedBusiness.phone) && (
+                        <a
+                          href={getWhatsAppUrl(selectedBusiness.phone, pitch.whatsapp)!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="button small"
+                          style={{ background: "#25D366", borderColor: "#25D366", color: "white" }}
+                          title="Send pre-filled WhatsApp pitch directly to business"
+                        >
+                          <Send size={13} /> Send WhatsApp Pitch 🚀
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        onClick={() => {
+                          navigator.clipboard.writeText(currentScript);
+                          setCopiedPitch(true);
+                          setTimeout(() => setCopiedPitch(false), 2000);
+                        }}
+                      >
+                        {copiedPitch ? <Check size={13} /> : <Clipboard size={13} />}
+                        {copiedPitch ? "Copied!" : "Copy Pitch"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Script tab selector */}
+                  <div className="pitch-tab-bar">
+                    <button
+                      type="button"
+                      className={`pitch-tab-btn ${pitchTab === "whatsapp" ? "active" : ""}`}
+                      onClick={() => setPitchTab("whatsapp")}
+                    >
+                      📱 WhatsApp Cold Message (Sinhala & English)
+                    </button>
+                    <button
+                      type="button"
+                      className={`pitch-tab-btn ${pitchTab === "call" ? "active" : ""}`}
+                      onClick={() => setPitchTab("call")}
+                    >
+                      📞 Phone Cold Call Script (Opening Pitch)
+                    </button>
+                  </div>
+
+                  <div className="pitch-content">
+                    {currentScript}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Business info cards */}
             <div className="grid-two">

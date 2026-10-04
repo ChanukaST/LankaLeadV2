@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import logging
+import re
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
@@ -39,6 +40,7 @@ from app.models import (
     DiscoveryResult,
     DiscoveryRun,
     Location,
+    OutreachStatus,
     RunStatus,
     SocialProfile,
     Source,
@@ -55,7 +57,9 @@ from app.schemas import (
     DiscoveryCreate,
     DiscoveryResponse,
     HealthCheckResponse,
+    LeadMetricsResponse,
     LocationResponse,
+    OutreachUpdateRequest,
     PaginatedBusinesses,
     ProviderStatusResponse,
     TokenResponse,
@@ -108,6 +112,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await connection.run_sync(Base.metadata.create_all)
         for col_sql in (
             "ALTER TABLE businesses ADD COLUMN email VARCHAR(320)",
+            "ALTER TABLE businesses ADD COLUMN outreach_status VARCHAR(50) DEFAULT 'NEW'",
+            "ALTER TABLE businesses ADD COLUMN outreach_notes TEXT",
+            "ALTER TABLE businesses ADD COLUMN last_contacted_at TIMESTAMP",
             "ALTER TABLE website_checks ADD COLUMN emails_found TEXT",
             "ALTER TABLE website_checks ADD COLUMN phones_found TEXT",
         ):
@@ -385,6 +392,10 @@ def _build_business_query(
     city: str | None = None,
     category_id: UUID | None = None,
     status_filter: WebsiteStatus | None = None,
+    outreach_status: str | None = None,
+    prime_leads: bool | None = None,
+    social_only: bool | None = None,
+    has_contact: bool | None = None,
     run_id: UUID | None = None,
     source_name: str | None = None,
     date_from: datetime | None = None,
@@ -445,6 +456,23 @@ def _build_business_query(
         query = query.where(Business.category_id == category_id)
     if status_filter:
         query = query.where(latest_status == status_filter)
+    if outreach_status:
+        query = query.where(Business.outreach_status == outreach_status)
+    if prime_leads:
+        query = query.where(
+            (Business.phone.isnot(None) | Business.email.isnot(None))
+            & (latest_status.in_([
+                WebsiteStatus.NOT_DETECTED,
+                WebsiteStatus.SOCIAL_ONLY,
+                WebsiteStatus.UNREACHABLE,
+                WebsiteStatus.PARKED,
+                WebsiteStatus.UNCLEAR,
+            ]) | latest_status.is_(None))
+        )
+    if social_only:
+        query = query.where(latest_status == WebsiteStatus.SOCIAL_ONLY)
+    if has_contact:
+        query = query.where(Business.phone.isnot(None) | Business.email.isnot(None))
 
     sort_col_map = {
         "name": Business.name,
@@ -453,6 +481,8 @@ def _build_business_query(
         "province": Business.province,
         "created_at": Business.created_at,
         "website_status": latest_status,
+        "outreach_status": Business.outreach_status,
+        "last_contacted_at": Business.last_contacted_at,
     }
     sort_column = sort_col_map.get(sort_by, Business.created_at)
     if sort_order.lower() == "asc":
@@ -471,11 +501,15 @@ async def list_businesses(
     city: str | None = None,
     category_id: UUID | None = None,
     status_filter: WebsiteStatus | None = Query(default=None, alias="website_status"),
+    outreach_status: str | None = Query(default=None, description="Filter by outreach status"),
+    prime_leads: bool | None = Query(default=None, description="Filter for prime calling leads"),
+    social_only: bool | None = Query(default=None, description="Filter for social presence only"),
+    has_contact: bool | None = Query(default=None, description="Filter for leads with contact info"),
     run_id: UUID | None = Query(default=None, description="Filter by discovery run"),
     source_name: str | None = Query(default=None, description="Filter by source name"),
     date_from: datetime | None = Query(default=None, description="Created on or after"),
     date_to: datetime | None = Query(default=None, description="Created on or before"),
-    sort_by: str = Query(default="created_at", pattern="^(name|city|district|province|created_at|website_status)$"),
+    sort_by: str = Query(default="created_at", pattern="^(name|city|district|province|created_at|website_status|outreach_status|last_contacted_at)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
@@ -484,8 +518,10 @@ async def list_businesses(
 ) -> PaginatedBusinesses:
     query = _build_business_query(
         search=search, province=province, district=district, city=city,
-        category_id=category_id, status_filter=status_filter, run_id=run_id,
-        source_name=source_name, date_from=date_from, date_to=date_to,
+        category_id=category_id, status_filter=status_filter,
+        outreach_status=outreach_status, prime_leads=prime_leads,
+        social_only=social_only, has_contact=has_contact,
+        run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by=sort_by, sort_order=sort_order,
     )
     count = await db.scalar(select(func.count()).select_from(query.subquery()))
@@ -561,6 +597,9 @@ async def list_businesses(
             discovery_evidence=evidence_map.get(business.id),
             sources=b_sources,
             social_profiles=social_map.get(business.id, []),
+            outreach_status=business.outreach_status or "NEW",
+            outreach_notes=business.outreach_notes,
+            last_contacted_at=business.last_contacted_at,
         ))
     return PaginatedBusinesses(data=items, pagination={"page": page, "page_size": page_size, "total": count or 0})
 
@@ -708,6 +747,9 @@ async def get_business(
         } if website else None,
         evidence=[latest_result.evidence] if latest_result else [],
         timeline=timeline,
+        outreach_status=business.outreach_status or "NEW",
+        outreach_notes=business.outreach_notes,
+        last_contacted_at=business.last_contacted_at,
     )
 
 
@@ -718,6 +760,181 @@ async def check_website_endpoint(url: str, _: User = Depends(current_user)) -> d
     return {"data": result.__dict__}
 
 
+@app.patch("/api/businesses/{business_id}/outreach", response_model=BusinessResponse)
+async def update_business_outreach(
+    business_id: UUID,
+    payload: OutreachUpdateRequest,
+    _: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BusinessResponse:
+    business = await db.scalar(
+        select(Business).where(Business.id == business_id)
+    )
+    if not business:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Business not found"})
+
+    changed = False
+    if payload.outreach_status is not None:
+        valid_statuses = {s.value for s in OutreachStatus}
+        status_val = payload.outreach_status.upper().strip()
+        if status_val not in valid_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_STATUS", "message": f"Status must be one of: {', '.join(sorted(valid_statuses))}"}
+            )
+        if business.outreach_status != status_val:
+            business.outreach_status = status_val
+            business.last_contacted_at = datetime.now(UTC)
+            changed = True
+
+    if payload.outreach_notes is not None:
+        business.outreach_notes = payload.outreach_notes
+        if not business.last_contacted_at:
+            business.last_contacted_at = datetime.now(UTC)
+        changed = True
+
+    if changed:
+        business.updated_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(business)
+
+    category_name = (await db.scalar(select(Category.name).where(Category.id == business.category_id))) or "General"
+    latest_status = await db.scalar(
+        select(DiscoveryResult.website_status)
+        .where(DiscoveryResult.business_id == business.id)
+        .order_by(DiscoveryResult.id.desc())
+        .limit(1)
+    )
+    latest_website_url = await db.scalar(
+        select(Website.url)
+        .where(Website.business_id == business.id)
+        .order_by(Website.last_checked_at.desc().nullslast())
+        .limit(1)
+    )
+
+    return BusinessResponse(
+        id=business.id,
+        name=business.name,
+        description=business.description,
+        phone=business.phone,
+        email=business.email,
+        address=business.address,
+        city=business.city,
+        district=business.district,
+        province=business.province,
+        category=category_name,
+        website_status=latest_status or WebsiteStatus.UNCLEAR,
+        website_url=latest_website_url,
+        created_at=business.created_at,
+        primary_source=None,
+        discovery_evidence=None,
+        sources=[],
+        social_profiles=[],
+        outreach_status=business.outreach_status or "NEW",
+        outreach_notes=business.outreach_notes,
+        last_contacted_at=business.last_contacted_at,
+    )
+
+
+@app.get("/api/lead-metrics", response_model=LeadMetricsResponse)
+async def get_lead_metrics(
+    _: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> LeadMetricsResponse:
+    latest_status = (
+        select(DiscoveryResult.website_status)
+        .where(DiscoveryResult.business_id == Business.id)
+        .order_by(DiscoveryResult.id.desc())
+        .limit(1)
+        .correlate(Business)
+        .scalar_subquery()
+    )
+
+    total_leads = (await db.scalar(select(func.count(Business.id)))) or 0
+
+    prime_query = select(func.count(Business.id)).where(
+        (Business.phone.isnot(None) | Business.email.isnot(None))
+        & (latest_status.in_([
+            WebsiteStatus.NOT_DETECTED,
+            WebsiteStatus.SOCIAL_ONLY,
+            WebsiteStatus.UNREACHABLE,
+            WebsiteStatus.PARKED,
+            WebsiteStatus.UNCLEAR,
+        ]) | latest_status.is_(None))
+    )
+    prime_targets = (await db.scalar(prime_query)) or 0
+
+    social_query = select(func.count(Business.id)).where(latest_status == WebsiteStatus.SOCIAL_ONLY)
+    social_only = (await db.scalar(social_query)) or 0
+
+    no_web_query = select(func.count(Business.id)).where(
+        latest_status.in_([
+            WebsiteStatus.NOT_DETECTED,
+            WebsiteStatus.UNREACHABLE,
+            WebsiteStatus.PARKED,
+            WebsiteStatus.UNCLEAR,
+        ]) | latest_status.is_(None)
+    )
+    no_website = (await db.scalar(no_web_query)) or 0
+
+    pipeline_raw = (await db.execute(
+        select(Business.outreach_status, func.count(Business.id)).group_by(Business.outreach_status)
+    )).all()
+    pipeline_counts = {str(r[0] or "NEW"): int(r[1]) for r in pipeline_raw}
+
+    return LeadMetricsResponse(
+        total_leads=total_leads,
+        prime_targets=prime_targets,
+        social_only=social_only,
+        no_website=no_website,
+        pipeline_new=pipeline_counts.get("NEW", 0),
+        pipeline_contacted=pipeline_counts.get("CONTACTED", 0),
+        pipeline_follow_up=pipeline_counts.get("FOLLOW_UP", 0),
+        pipeline_proposal=pipeline_counts.get("PROPOSAL_SENT", 0),
+        pipeline_won=pipeline_counts.get("WON", 0),
+        pipeline_not_interested=pipeline_counts.get("NOT_INTERESTED", 0),
+    )
+
+
+def _format_clean_phone(phone: str | None) -> str:
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("94"):
+        return f"+{digits}"
+    if digits.startswith("0") and len(digits) == 10:
+        return f"+94{digits[1:]}"
+    if len(digits) == 9 and digits.startswith("7"):
+        return f"+94{digits}"
+    return phone
+
+
+def _format_whatsapp_url(phone: str | None) -> str:
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("947") and len(digits) == 11:
+        return f"https://wa.me/{digits}"
+    if digits.startswith("07") and len(digits) == 10:
+        return f"https://wa.me/94{digits[1:]}"
+    if digits.startswith("7") and len(digits) == 9:
+        return f"https://wa.me/94{digits}"
+    return f"https://wa.me/{digits}" if digits else ""
+
+
+def _determine_lead_priority(status: WebsiteStatus | None, phone: str | None, email: str | None) -> str:
+    has_contact = bool(phone or email)
+    if not has_contact:
+        return "LOW (NO CONTACT INFO)"
+    if status == WebsiteStatus.SOCIAL_ONLY:
+        return "PRIME TARGET (SOCIAL ONLY - READY FOR WEBSITE)"
+    if status in {WebsiteStatus.NOT_DETECTED, WebsiteStatus.UNREACHABLE, WebsiteStatus.PARKED, None}:
+        return "PRIME TARGET (NO WEBSITE + PHONE)"
+    if status == WebsiteStatus.FOUND:
+        return "REDESIGN OPPORTUNITY (WEBSITE FOUND)"
+    return "PROSPECT"
+
+
 @app.get("/api/exports/businesses.csv")
 async def export_businesses_csv(
     search: str | None = None,
@@ -726,6 +943,10 @@ async def export_businesses_csv(
     city: str | None = None,
     category_id: UUID | None = None,
     status_filter: WebsiteStatus | None = Query(default=None, alias="website_status"),
+    outreach_status: str | None = Query(default=None, description="Filter by outreach status"),
+    prime_leads: bool | None = Query(default=None, description="Filter for prime calling leads"),
+    social_only: bool | None = Query(default=None, description="Filter for social presence only"),
+    has_contact: bool | None = Query(default=None, description="Filter for leads with contact info"),
     run_id: UUID | None = None,
     source_name: str | None = None,
     date_from: datetime | None = None,
@@ -735,8 +956,10 @@ async def export_businesses_csv(
 ) -> Response:
     query = _build_business_query(
         search=search, province=province, district=district, city=city,
-        category_id=category_id, status_filter=status_filter, run_id=run_id,
-        source_name=source_name, date_from=date_from, date_to=date_to,
+        category_id=category_id, status_filter=status_filter,
+        outreach_status=outreach_status, prime_leads=prime_leads,
+        social_only=social_only, has_contact=has_contact,
+        run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by="name", sort_order="asc",
     )
     rows = (await db.execute(query)).all()
@@ -744,7 +967,9 @@ async def export_businesses_csv(
     writer = csv.writer(output)
     writer.writerow([
         "business_name", "category", "city", "district", "province",
-        "phone", "email", "address", "website_url", "website_status", "created_at"
+        "phone", "direct_dial_number", "whatsapp_link", "email", "address",
+        "website_url", "website_status", "lead_priority",
+        "outreach_status", "outreach_notes", "last_contacted_at", "created_at"
     ])
     for r in rows:
         row = cast(tuple[object, ...], r)
@@ -759,16 +984,22 @@ async def export_businesses_csv(
             biz.district,
             biz.province,
             biz.phone or "",
+            _format_clean_phone(biz.phone),
+            _format_whatsapp_url(biz.phone),
             biz.email or "",
             biz.address or "",
             url_val or "",
             (st or WebsiteStatus.UNCLEAR).value,
+            _determine_lead_priority(st, biz.phone, biz.email),
+            biz.outreach_status or "NEW",
+            biz.outreach_notes or "",
+            biz.last_contacted_at.isoformat() if biz.last_contacted_at else "",
             biz.created_at.isoformat() if biz.created_at else "",
         ])
     return Response(
         content=output.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="lankalead-businesses.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="lankalead-telesales-calling-sheet.csv"'},
     )
 
 
@@ -780,6 +1011,10 @@ async def export_businesses_json(
     city: str | None = None,
     category_id: UUID | None = None,
     status_filter: WebsiteStatus | None = Query(default=None, alias="website_status"),
+    outreach_status: str | None = Query(default=None, description="Filter by outreach status"),
+    prime_leads: bool | None = Query(default=None, description="Filter for prime calling leads"),
+    social_only: bool | None = Query(default=None, description="Filter for social presence only"),
+    has_contact: bool | None = Query(default=None, description="Filter for leads with contact info"),
     run_id: UUID | None = None,
     source_name: str | None = None,
     date_from: datetime | None = None,
@@ -789,8 +1024,10 @@ async def export_businesses_json(
 ) -> list[dict[str, object]]:
     query = _build_business_query(
         search=search, province=province, district=district, city=city,
-        category_id=category_id, status_filter=status_filter, run_id=run_id,
-        source_name=source_name, date_from=date_from, date_to=date_to,
+        category_id=category_id, status_filter=status_filter,
+        outreach_status=outreach_status, prime_leads=prime_leads,
+        social_only=social_only, has_contact=has_contact,
+        run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by="name", sort_order="asc",
     )
     rows = (await db.execute(query)).all()
@@ -809,10 +1046,16 @@ async def export_businesses_json(
             "district": biz.district,
             "province": biz.province,
             "phone": biz.phone,
+            "direct_dial_number": _format_clean_phone(biz.phone),
+            "whatsapp_link": _format_whatsapp_url(biz.phone),
             "email": biz.email,
             "address": biz.address,
             "website_url": url_val,
             "website_status": (st or WebsiteStatus.UNCLEAR).value,
+            "lead_priority": _determine_lead_priority(st, biz.phone, biz.email),
+            "outreach_status": biz.outreach_status or "NEW",
+            "outreach_notes": biz.outreach_notes,
+            "last_contacted_at": biz.last_contacted_at.isoformat() if biz.last_contacted_at else None,
             "created_at": biz.created_at.isoformat() if biz.created_at else None,
         })
     return items_json
