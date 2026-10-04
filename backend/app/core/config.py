@@ -1,16 +1,24 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _resolve_default_db_url() -> str:
+    root_db = Path(__file__).resolve().parent.parent.parent.parent / "lankalead.db"
+    if root_db.exists():
+        return f"sqlite+aiosqlite:///{root_db.as_posix()}"
+    return "sqlite+aiosqlite:///./lankalead.db"
 
 
 class Settings(BaseSettings):
     app_name: str = "LankaLead"
     environment: str = "development"
-    database_url: str = "sqlite+aiosqlite:///./lankalead.db"
+    database_url: str = _resolve_default_db_url()
     redis_url: str = "redis://localhost:6379/0"
     secret_key: str = "change-me-in-production"
-    access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 7
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days for internal sales operations
+    refresh_token_expire_days: int = 14
     provider_name: str = "osm"
     overpass_url: str = "https://overpass-api.de/api/interpreter"
     overpass_endpoints: str = (

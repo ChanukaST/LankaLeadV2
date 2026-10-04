@@ -239,8 +239,29 @@ const api = async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
     },
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: { message?: string } } | null;
-    throw new Error(body?.detail?.message || `Request failed (${response.status})`);
+    if (response.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
+      localStorage.removeItem("lankalead_token");
+      window.dispatchEvent(
+        new CustomEvent("lankalead:unauthorized", {
+          detail: {
+            message: "Your session has expired. Please sign in again.",
+          },
+        })
+      );
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string | { code?: string; message?: string };
+    } | null;
+    let errorMsg = `Request failed (${response.status})`;
+    if (body?.detail) {
+      if (typeof body.detail === "string") {
+        errorMsg = body.detail;
+      } else if (typeof body.detail === "object" && body.detail.message) {
+        errorMsg = body.detail.message;
+      }
+    }
+    throw new Error(errorMsg);
   }
   return response.json();
 };
@@ -424,6 +445,48 @@ function App() {
   const [message, setMessage] = useState("Sign in or create an account to start business discovery.");
   const [authenticated, setAuthenticated] = useState(Boolean(localStorage.getItem("lankalead_token")));
 
+  // Global auth listener & session validation
+  useEffect(() => {
+    const handleUnauthorized = (event: Event) => {
+      const customMsg = (event as CustomEvent<{ message?: string }>).detail?.message;
+      localStorage.removeItem("lankalead_token");
+      setAuthenticated(false);
+      setMessage(customMsg || "Your session has expired. Please sign in again.");
+    };
+    window.addEventListener("lankalead:unauthorized", handleUnauthorized);
+
+    const token = localStorage.getItem("lankalead_token");
+    if (token) {
+      api<{ id: string; email: string }>("/auth/me")
+        .then(() => {
+          setAuthenticated(true);
+        })
+        .catch(() => {
+          // Handled automatically by 401 interceptor in api()
+        });
+    } else {
+      setAuthenticated(false);
+    }
+
+    return () => window.removeEventListener("lankalead:unauthorized", handleUnauthorized);
+  }, []);
+
+  // Periodic token refresh to maintain continuous session for internal tele-sales team
+  useEffect(() => {
+    if (!authenticated) return;
+    const interval = window.setInterval(async () => {
+      try {
+        const refreshed = await api<{ access_token: string }>("/auth/refresh", { method: "POST" });
+        if (refreshed?.access_token) {
+          localStorage.setItem("lankalead_token", refreshed.access_token);
+        }
+      } catch {
+        // Handled by 401 interceptor if invalid
+      }
+    }, 1000 * 60 * 30); // every 30 minutes
+    return () => window.clearInterval(interval);
+  }, [authenticated]);
+
   // Handle URL hash routing (e.g. #/business/UUID)
   useEffect(() => {
     const handleHashChange = () => {
@@ -471,8 +534,9 @@ function App() {
       localStorage.setItem("lankalead_token", result.access_token);
       setAuthenticated(true);
       setMessage("Welcome back.");
-    } catch {
-      setMessage("Login failed. Check your email or password.");
+      setRunMessage("");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Login failed. Check your email or password.");
     }
   };
 
@@ -485,8 +549,9 @@ function App() {
       localStorage.setItem("lankalead_token", result.access_token);
       setAuthenticated(true);
       setMessage("Account created.");
-    } catch {
-      setMessage("Registration failed. Use a valid email and 8+ character password.");
+      setRunMessage("");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Registration failed. Use a valid email and 8+ character password.");
     }
   };
 
@@ -727,6 +792,15 @@ function App() {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem("lankalead_token");
+        window.dispatchEvent(
+          new CustomEvent("lankalead:unauthorized", {
+            detail: { message: "Your session has expired. Please sign in again." },
+          })
+        );
+        return;
+      }
       setMessage(`Unable to export businesses as ${format.toUpperCase()}.`);
       return;
     }
@@ -774,19 +848,38 @@ function App() {
   };
 
   if (!authenticated) {
+    const isAuthWarning =
+      message.toLowerCase().includes("expired") ||
+      message.toLowerCase().includes("invalid") ||
+      message.toLowerCase().includes("failed");
     return (
       <main className="auth">
         <section className="auth-card">
           <p className="eyebrow">LANKALEAD</p>
           <h1>Understand the online presence of Sri Lankan businesses.</h1>
-          <div className="auth-message">{message}</div>
+          <div className={`auth-message ${isAuthWarning ? "warning" : ""}`}>
+            {isAuthWarning ? "⚠️ " : "ℹ️ "}
+            {message}
+          </div>
           <div>
             <label>Email address</label>
-            <input placeholder="name@company.lk" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input
+              placeholder="name@company.lk"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && authenticate()}
+            />
           </div>
           <div>
             <label>Password (8+ chars)</label>
-            <input placeholder="••••••••" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <input
+              placeholder="••••••••"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && authenticate()}
+            />
           </div>
           <div className="actions">
             <button onClick={authenticate}>Sign in</button>
