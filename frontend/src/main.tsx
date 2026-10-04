@@ -392,9 +392,9 @@ function App() {
 
   // Outreach & Lead CRM state
   const [leadMetrics, setLeadMetrics] = useState<LeadMetrics | null>(null);
-  const [quickSegment, setQuickSegment] = useState<"all" | "prime" | "social" | "pipeline" | "won" | "not_interested">("prime");
+  const [quickSegment, setQuickSegment] = useState<"all" | "prime" | "social" | "pipeline" | "won" | "not_interested">("all");
   const [filterOutreachStatus, setFilterOutreachStatus] = useState("");
-  const [filterPrimeLeads, setFilterPrimeLeads] = useState(true);
+  const [filterPrimeLeads, setFilterPrimeLeads] = useState(false);
   const [filterSocialOnly, setFilterSocialOnly] = useState(false);
 
   // Outreach editing state in Modal
@@ -558,25 +558,56 @@ function App() {
     }
   }, [authenticated]);
 
-  const loadBusinesses = async (pageToLoad: number = page) => {
+  const loadBusinesses = async (
+    pageToLoad: number = page,
+    overrides?: {
+      sortBy?: string;
+      sortOrder?: "asc" | "desc";
+      primeLeads?: boolean;
+      socialOnly?: boolean;
+      status?: string;
+      outreachStatus?: string;
+      category?: string;
+      province?: string;
+      district?: string;
+      city?: string;
+      search?: string;
+      runId?: string;
+      source?: string;
+    }
+  ) => {
     try {
+      const activeSortBy = overrides?.sortBy !== undefined ? overrides.sortBy : sortBy;
+      const activeSortOrder = overrides?.sortOrder !== undefined ? overrides.sortOrder : sortOrder;
+      const activePrime = overrides?.primeLeads !== undefined ? overrides.primeLeads : filterPrimeLeads;
+      const activeSocial = overrides?.socialOnly !== undefined ? overrides.socialOnly : filterSocialOnly;
+      const activeStatus = overrides?.status !== undefined ? overrides.status : filterStatus;
+      const activeOutreach = overrides?.outreachStatus !== undefined ? overrides.outreachStatus : filterOutreachStatus;
+      const activeCat = overrides?.category !== undefined ? overrides.category : filterCategory;
+      const activeProv = overrides?.province !== undefined ? overrides.province : filterProvince;
+      const activeDist = overrides?.district !== undefined ? overrides.district : filterDistrict;
+      const activeCity = overrides?.city !== undefined ? overrides.city : filterCity;
+      const activeSearch = overrides?.search !== undefined ? overrides.search : search;
+      const activeRunId = overrides?.runId !== undefined ? overrides.runId : filterRunId;
+      const activeSource = overrides?.source !== undefined ? overrides.source : filterSource;
+
       const params = new URLSearchParams({
         page: pageToLoad.toString(),
         page_size: pageSize.toString(),
-        sort_by: sortBy,
-        sort_order: sortOrder,
+        sort_by: activeSortBy,
+        sort_order: activeSortOrder,
       });
-      if (filterCategory) params.set("category_id", filterCategory);
-      if (filterProvince) params.set("province", filterProvince);
-      if (filterDistrict) params.set("district", filterDistrict);
-      if (filterCity) params.set("city", filterCity);
-      if (filterStatus) params.set("website_status", filterStatus);
-      if (filterOutreachStatus) params.set("outreach_status", filterOutreachStatus);
-      if (filterPrimeLeads) params.set("prime_leads", "true");
-      if (filterSocialOnly) params.set("social_only", "true");
-      if (filterRunId) params.set("run_id", filterRunId);
-      if (filterSource) params.set("source_name", filterSource);
-      if (search) params.set("search", search);
+      if (activeCat) params.set("category_id", activeCat);
+      if (activeProv) params.set("province", activeProv);
+      if (activeDist) params.set("district", activeDist);
+      if (activeCity) params.set("city", activeCity);
+      if (activeStatus) params.set("website_status", activeStatus);
+      if (activeOutreach) params.set("outreach_status", activeOutreach);
+      if (activePrime) params.set("prime_leads", "true");
+      if (activeSocial) params.set("social_only", "true");
+      if (activeRunId) params.set("run_id", activeRunId);
+      if (activeSource) params.set("source_name", activeSource);
+      if (activeSearch) params.set("search", activeSearch);
 
       const result = await api<{ data: Business[]; pagination: { total: number; page: number; page_size: number } }>(
         `/businesses?${params}`
@@ -687,6 +718,21 @@ function App() {
     maxRecords?: number;
   }) => {
     setStartingDiscovery(true);
+    // Switch to All Leads (newest first) and clear conflicting filters so new results are immediately visible
+    setQuickSegment("all");
+    setFilterPrimeLeads(false);
+    setFilterSocialOnly(false);
+    setFilterStatus("");
+    setFilterOutreachStatus("");
+    setFilterProvince("");
+    setFilterDistrict("");
+    setFilterCity("");
+    setFilterCategory("");
+    setSearch("");
+    setSortBy("created_at");
+    setSortOrder("desc");
+    setPage(1);
+
     const targetLoc = override?.locationId !== undefined ? override.locationId : locationId;
     const targetCat = override?.categoryId !== undefined ? override.categoryId : categoryId;
     const targetProvider = override?.provider || selectedProvider;
@@ -743,10 +789,54 @@ function App() {
     if (!authenticated || !runs.some((run) => run.status === "QUEUED" || run.status === "RUNNING")) return;
     const timer = window.setInterval(async () => {
       const updated = await api<DiscoveryRun[]>("/discovery").catch(() => runs);
+      const hadActiveRun = runs.some((r) => r.status === "QUEUED" || r.status === "RUNNING");
+      const activeRunsNow = updated.filter((r) => r.status === "QUEUED" || r.status === "RUNNING");
+      const newlyFinished = runs.some(
+        (r) => (r.status === "QUEUED" || r.status === "RUNNING") &&
+        updated.find((u) => u.id === r.id && (u.status === "COMPLETED" || u.status === "FAILED"))
+      );
+      const countChanged = updated.some((u) => {
+        const prev = runs.find((r) => r.id === u.id);
+        return prev && u.businesses_found > prev.businesses_found;
+      });
+
       setRuns(updated);
-      if (updated.some((run) => run.status === "COMPLETED")) {
-        loadBusinesses();
+
+      if (newlyFinished || countChanged || (hadActiveRun && activeRunsNow.length === 0)) {
+        setQuickSegment("all");
+        setFilterPrimeLeads(false);
+        setFilterSocialOnly(false);
+        setFilterStatus("");
+        setFilterOutreachStatus("");
+        setSortBy("created_at");
+        setSortOrder("desc");
+        setPage(1);
+
+        loadBusinesses(1, {
+          sortBy: "created_at",
+          sortOrder: "desc",
+          primeLeads: false,
+          socialOnly: false,
+          status: "",
+          outreachStatus: "",
+          province: "",
+          district: "",
+          city: "",
+          category: "",
+          search: "",
+        });
         loadLeadMetrics();
+
+        if (newlyFinished) {
+          const completedRun = updated.find((u) =>
+            runs.some((r) => r.id === u.id && (r.status === "QUEUED" || r.status === "RUNNING") && u.status === "COMPLETED")
+          );
+          if (completedRun) {
+            setRunMessage(
+              `✅ Search completed! Found ${completedRun.businesses_found} businesses (${completedRun.websites_not_detected} without detected websites). Newest results are displayed first below.`
+            );
+          }
+        }
       }
     }, 1500);
     return () => window.clearInterval(timer);
@@ -939,19 +1029,40 @@ function App() {
               .map((p) => (p || "").trim())
               .filter((p) => p && p.toLowerCase() !== "none" && p.toLowerCase() !== "sri lanka");
             const locationDisplay = locationParts.length > 0 ? locationParts.join(", ") : (biz.province || "Sri Lanka");
+            const isFresh = Boolean(
+              biz.created_at && (Date.now() - new Date(biz.created_at).getTime() < 30 * 60 * 1000)
+            );
 
             return (
               <tr key={biz.id}>
                 <td>
                   <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <button
-                      className="link-button"
-                      style={{ fontSize: "0.95rem", fontWeight: 700 }}
-                      onClick={() => openBusiness(biz.id)}
-                      title="Click to view full profile & cold outreach pitch scripts"
-                    >
-                      {biz.name}
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <button
+                        className="link-button"
+                        style={{ fontSize: "0.95rem", fontWeight: 700 }}
+                        onClick={() => openBusiness(biz.id)}
+                        title="Click to view full profile & cold outreach pitch scripts"
+                      >
+                        {biz.name}
+                      </button>
+                      {isFresh && (
+                        <span
+                          style={{
+                            fontSize: "0.68rem",
+                            background: "#dcfce7",
+                            color: "#15803d",
+                            border: "1px solid #86efac",
+                            padding: "1px 6px",
+                            borderRadius: "9999px",
+                            fontWeight: 700,
+                          }}
+                          title="Discovered recently in this session"
+                        >
+                          ⚡ Just Found
+                        </span>
+                      )}
+                    </div>
                     <div>
                       <span className="badge-category">
                         {getCategoryIcon(biz.category)} {biz.category}
@@ -1326,11 +1437,23 @@ function App() {
           <span className="step-title">Review Targets & Start Calling</span>
         </div>
         <p className="step-desc">
-          Focus on businesses with verified phone numbers that do not have a website. Click any business to view their pitch script.
+          All discovered businesses are shown below (newest first). Click any business to view their profile and pitch scripts, or filter by Prime Calling Targets.
         </p>
 
-        {/* 4 Clean Metric Cards */}
+        {/* 5 Clean Metric Cards */}
         <div className="stats-clean-grid">
+          <div
+            className={`metric-clean-card ${quickSegment === "all" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("all")}
+            title="Show all discovered businesses (newest first)"
+          >
+            <div className="metric-icon-wrap" style={{ background: "#e0f2fe", color: "#0284c7" }}>⚡</div>
+            <div>
+              <div className="metric-clean-val">{leadMetrics?.total_leads ?? totalItems}</div>
+              <div className="metric-clean-lbl">All Discovered Leads</div>
+            </div>
+          </div>
+
           <div
             className={`metric-clean-card ${quickSegment === "prime" ? "active" : ""}`}
             onClick={() => selectQuickSegment("prime")}
@@ -1386,6 +1509,14 @@ function App() {
         <div className="calling-segment-tabs">
           <button
             type="button"
+            className={`calling-tab ${quickSegment === "all" ? "active" : ""}`}
+            onClick={() => selectQuickSegment("all")}
+          >
+            ⚡ All Leads (Newest First)
+            <span className="tab-pill-badge">{leadMetrics?.total_leads ?? totalItems}</span>
+          </button>
+          <button
+            type="button"
             className={`calling-tab ${quickSegment === "prime" ? "active" : ""}`}
             onClick={() => selectQuickSegment("prime")}
           >
@@ -1417,13 +1548,6 @@ function App() {
           >
             🏆 Deals Won
             <span className="tab-pill-badge">{leadMetrics?.pipeline_won ?? 0}</span>
-          </button>
-          <button
-            type="button"
-            className={`calling-tab ${quickSegment === "all" ? "active" : ""}`}
-            onClick={() => selectQuickSegment("all")}
-          >
-            All Leads ({leadMetrics?.total_leads ?? totalItems})
           </button>
         </div>
 
