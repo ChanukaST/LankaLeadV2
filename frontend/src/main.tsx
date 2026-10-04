@@ -1134,31 +1134,44 @@ function App() {
 
                     {biz.social_profiles && biz.social_profiles.length > 0 && (
                       <div style={{ display: "inline-flex", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
-                        {biz.social_profiles.map((p) => (
-                          <a
-                            key={p.profile_url}
-                            href={p.profile_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                              fontSize: "0.72rem",
-                              padding: "1px 6px",
-                              borderRadius: "4px",
-                              background: p.platform === "TikTok" ? "#0f172a" : p.platform === "Instagram" ? "#fce7f3" : p.platform === "Facebook" ? "#eff6ff" : "#f1f5f9",
-                              color: p.platform === "TikTok" ? "#38bdf8" : p.platform === "Instagram" ? "#be185d" : p.platform === "Facebook" ? "#1d4ed8" : "#334155",
-                              textDecoration: "none",
-                              fontWeight: 600,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "3px",
-                              border: p.platform === "TikTok" ? "1px solid #334155" : "none",
-                            }}
-                            title={`Open ${p.platform} profile`}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {p.platform === "TikTok" ? "🎵 TikTok" : p.platform === "Instagram" ? "📸 IG" : p.platform === "Facebook" ? "📘 FB" : p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform}
-                          </a>
-                        ))}
+                        {biz.social_profiles.map((p) => {
+                          const isMaps = p.platform === "Google Maps";
+                          const isTikTok = p.platform === "TikTok";
+                          const isInsta = p.platform === "Instagram";
+                          const isFb = p.platform === "Facebook";
+                          const isLi = p.platform === "LinkedIn";
+
+                          const bg = isMaps ? "#e8f0fe" : isTikTok ? "#0f172a" : isInsta ? "#fce7f3" : isFb ? "#eff6ff" : "#f1f5f9";
+                          const color = isMaps ? "#1a73e8" : isTikTok ? "#38bdf8" : isInsta ? "#be185d" : isFb ? "#1d4ed8" : "#334155";
+                          const border = isMaps ? "1px solid #d2e3fc" : isTikTok ? "1px solid #334155" : "none";
+                          const label = isMaps ? "📍 Maps" : isTikTok ? "🎵 TikTok" : isInsta ? "📸 IG" : isFb ? "📘 FB" : isLi ? "💼 LinkedIn" : p.platform;
+
+                          return (
+                            <a
+                              key={p.profile_url}
+                              href={p.profile_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                fontSize: "0.72rem",
+                                padding: "1px 6px",
+                                borderRadius: "4px",
+                                background: bg,
+                                color: color,
+                                textDecoration: "none",
+                                fontWeight: 600,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "3px",
+                                border: border,
+                              }}
+                              title={`Open ${p.platform} preview`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {label}
+                            </a>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -1404,7 +1417,7 @@ function App() {
                   <option value="tiktok">🎵 TikTok Local Business Discovery</option>
                   <option value="osm">🗺️ OpenStreetMap Places</option>
                   <option value="directory">📖 RainbowPages Phone Directory</option>
-                  <option value="search">🔍 Web & LinkedIn Search</option>
+                  <option value="search">🔍 Web & Google Maps Search Discovery</option>
                 </>
               )}
             </select>
@@ -2003,8 +2016,7 @@ function App() {
                     <div className="info-row" key={p.profile_url}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                         <span className="badge badge-source" style={{ textTransform: "none", fontSize: "0.75rem", padding: "2px 8px" }}>
-                          {p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform === "TikTok" ? "🎵 TikTok" : p.platform}
-
+                          {p.platform === "Google Maps" ? "📍 Google Maps" : p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform === "TikTok" ? "🎵 TikTok" : p.platform}
                         </span>
                       </span>
                       <a
@@ -2327,7 +2339,7 @@ function App() {
                         className="badge badge-source"
                         style={{ textDecoration: "none" }}
                       >
-                        {p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform}
+                        {p.platform === "Google Maps" ? "📍 Google Maps" : p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform === "TikTok" ? "🎵 TikTok" : p.platform}
                       </a>
                     ))
                   ) : (

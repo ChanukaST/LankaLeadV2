@@ -23,7 +23,7 @@ from app.models import (
     WebsiteCheck,
     WebsiteStatus,
 )
-from app.sources import get_business_source
+from app.sources import collect_google_maps_preview, get_business_source
 from app.websites import check_website, probe_candidate_domains
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,52 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                     website_candidate = record.website
                     if website_candidate and website_candidate.strip().lower() in {"none", "null", "n/a", ""}:
                         website_candidate = None
+
+                    # Check if provider already supplied Google Maps profile
+                    maps_profile = next((s for s in record.social_links if s.platform.lower() == "google maps"), None)
+                    maps_url = maps_profile.url if maps_profile else None
+                    maps_evidence: str | None = None
+
+                    # Collect information of target through Google Maps preview and web search
+                    try:
+                        maps_preview = await collect_google_maps_preview(
+                            name=record.name,
+                            city=record.city,
+                            district=record.district,
+                            province=record.province,
+                        )
+                        if maps_preview:
+                            if not business.phone and maps_preview.phone:
+                                business.phone = maps_preview.phone
+                            if (not business.address or business.address.endswith(", Sri Lanka")) and maps_preview.address:
+                                business.address = maps_preview.address
+                            if maps_preview.latitude and not business.latitude:
+                                business.latitude = maps_preview.latitude
+                            if maps_preview.longitude and not business.longitude:
+                                business.longitude = maps_preview.longitude
+                            if not website_candidate and maps_preview.website:
+                                website_candidate = maps_preview.website
+                            if not maps_url and maps_preview.maps_url:
+                                maps_url = maps_preview.maps_url
+                            if maps_preview.evidence:
+                                maps_evidence = maps_preview.evidence
+                    except Exception as maps_exc:
+                        logger.debug("Google Maps preview enrichment error for %s: %s", record.name, maps_exc)
+
+                    if maps_url:
+                        existing_maps_sp = await db.scalar(
+                            select(SocialProfile).where(
+                                SocialProfile.business_id == business.id,
+                                SocialProfile.platform == "Google Maps",
+                            )
+                        )
+                        if not existing_maps_sp:
+                            db.add(SocialProfile(
+                                business_id=business.id,
+                                platform="Google Maps",
+                                profile_url=maps_url,
+                            ))
+
                     check = None
                     probed = False
 
@@ -237,6 +283,8 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                         run.websites_not_detected += 1
 
                     evidence_parts: list[str] = [f"{business_source.name} public source evidence."]
+                    if maps_evidence:
+                        evidence_parts.append(maps_evidence)
                     if record.website:
                         evidence_parts.append(
                             f"Website candidate {record.website} analyzed (status: {website_status.value}, "

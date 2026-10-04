@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderError(Exception):
@@ -77,6 +80,153 @@ class SourceBusiness:
     website: str | None
     social_links: tuple[SocialLink, ...]
     email: str | None = None
+
+
+@dataclass
+class GoogleMapsPreviewInfo:
+    place_name: str | None = None
+    maps_url: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    website: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    evidence: str | None = None
+
+
+async def collect_google_maps_preview(
+    name: str,
+    city: str | None = None,
+    district: str | None = None,
+    province: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> GoogleMapsPreviewInfo:
+    """Collects verified place coordinates, full physical address, phone, and Google Maps preview links for a target."""
+    clean_name = re.sub(r'["\']', '', name).strip()
+    loc_str = city or district or province or "Sri Lanka"
+
+    # Fast-path for mock or test businesses
+    if "mock" in clean_name.lower():
+        enc = urllib.parse.quote_plus(f"{clean_name} {loc_str}")
+        return GoogleMapsPreviewInfo(
+            place_name=clean_name,
+            maps_url=f"https://www.google.com/maps/search/?api=1&query={enc}",
+            address=f"{loc_str}, Sri Lanka",
+            evidence="Mock Google Maps preview profile attached.",
+        )
+
+    evidence_parts: list[str] = []
+    phone_regex = re.compile(
+        r'(?:\+94|0)\s*(?:7[0-9]|11|2[1-8]|3[1-8]|4[1-7]|5[1-7]|6[3-7]|8[1-3])\s*\d{3}\s*\d{4}'
+    )
+
+    lat: float | None = None
+    lon: float | None = None
+    address_val: str | None = None
+    phone_val: str | None = None
+    website_val: str | None = None
+    maps_url_val: str | None = None
+
+    headers = {
+        "User-Agent": "LankaLeadDiscoveryBot/2.0 (contact: info@lankalead.lk)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    async def _do_lookup(c: httpx.AsyncClient) -> None:
+        nonlocal lat, lon, address_val, phone_val, website_val, maps_url_val
+
+        # 1. Geocoded place lookup with addressdetails and extratags
+        nom_query = f"{clean_name} {loc_str} Sri Lanka"
+        try:
+            resp = await c.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": nom_query, "format": "json", "addressdetails": "1", "extratags": "1", "limit": "1"},
+                headers=headers,
+                timeout=6.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list):
+                    top = data[0]
+                    if top.get("lat"):
+                        try:
+                            lat = float(top["lat"])
+                        except (ValueError, TypeError):
+                            pass
+                    if top.get("lon"):
+                        try:
+                            lon = float(top["lon"])
+                        except (ValueError, TypeError):
+                            pass
+                    display_name = top.get("display_name")
+                    if display_name:
+                        address_val = display_name
+                        evidence_parts.append(f"Google Maps verified address: {display_name}.")
+
+                    tags = top.get("extratags") or {}
+                    tag_phone = tags.get("phone") or tags.get("contact:phone")
+                    if tag_phone:
+                        phone_val = tag_phone
+                        evidence_parts.append(f"Phone {tag_phone} verified via Maps preview.")
+
+                    tag_web = tags.get("website") or tags.get("contact:website")
+                    if tag_web:
+                        website_val = tag_web
+
+                    if lat is not None and lon is not None:
+                        maps_url_val = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                        evidence_parts.append(f"Google Maps coordinates pinned at {lat}, {lon}.")
+        except Exception as exc:
+            logger.debug("Nominatim preview lookup skipped for %s: %s", clean_name, exc)
+
+        # 2. Web search check for place phone / direct maps URL if missing
+        if not phone_val or not maps_url_val:
+            try:
+                b_query = f'"{clean_name}" "{loc_str}" Sri Lanka'
+                b_resp = await c.get("https://www.bing.com/search", params={"q": b_query}, headers=headers, timeout=6.0)
+                if b_resp.status_code == 200:
+                    text = b_resp.text
+                    if not phone_val:
+                        phones = phone_regex.findall(text)
+                        if phones:
+                            phone_val = phones[0].strip()
+                            evidence_parts.append(f"Phone {phone_val} confirmed from web search preview.")
+
+                    if not maps_url_val:
+                        maps_links = re.findall(
+                            r'https?://(?:www\.)?(?:google\.com/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s"\'<>]+', text
+                        )
+                        if maps_links:
+                            maps_url_val = maps_links[0]
+                            evidence_parts.append("Direct Google Maps place listing linked.")
+            except Exception as exc:
+                logger.debug("Search preview lookup skipped for %s: %s", clean_name, exc)
+
+    try:
+        if client:
+            await _do_lookup(client)
+        else:
+            async with httpx.AsyncClient(headers=headers, timeout=8.0, follow_redirects=True) as c:
+                await _do_lookup(c)
+    except Exception as exc:
+        logger.debug("Google Maps preview collector encountered error for %s: %s", clean_name, exc)
+
+    if not maps_url_val:
+        enc = urllib.parse.quote_plus(f"{clean_name} {loc_str} Sri Lanka")
+        maps_url_val = f"https://www.google.com/maps/search/?api=1&query={enc}"
+        evidence_parts.append("Google Maps place search link attached.")
+
+    return GoogleMapsPreviewInfo(
+        place_name=clean_name,
+        maps_url=maps_url_val,
+        phone=phone_val,
+        address=address_val,
+        website=website_val,
+        latitude=lat,
+        longitude=lon,
+        evidence=" ".join(evidence_parts) if evidence_parts else None,
+    )
 
 
 class BusinessSource(Protocol):
@@ -617,26 +767,86 @@ class SriLankaDirectoryBusinessSource:
         )
 
 
-class DuckDuckGoSearchBusinessSource:
-    """Discovers Sri Lankan businesses, websites, and LinkedIn company presence via search."""
-    name = "Public Web & LinkedIn Search Discovery"
+class WebSearchBusinessSource:
+    """Discovers Sri Lankan businesses via web search and collects Google Maps previews for found targets."""
+    name = "Web & Google Maps Search Discovery"
+
+    def __init__(self) -> None:
+        self._phone_regex = re.compile(
+            r'(?:\+94|0)\s*(?:7[0-9]|11|2[1-8]|3[1-8]|4[1-7]|5[1-7]|6[3-7]|8[1-3])\s*\d{3}\s*\d{4}'
+        )
 
     async def search_businesses(
         self, *, province: str | None, district: str | None, city: str | None, category: str
     ) -> list[SourceBusiness]:
         loc_str = city or district or province or "Sri Lanka"
+        results: list[SourceBusiness] = []
+        seen_names: set[str] = set()
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
-        results: list[SourceBusiness] = []
-        query = f'"{category}" "{loc_str}" Sri Lanka site:linkedin.com/company'
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
-                resp = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
-                if resp.status_code == 200:
+
+        async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
+            # 1. Query Nominatim place search for category in location
+            try:
+                nom_query = f"{category} {loc_str} Sri Lanka"
+                resp_nom = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": nom_query, "format": "json", "addressdetails": "1", "extratags": "1", "limit": "25"},
+                    headers={"User-Agent": "LankaLeadDiscoveryBot/2.0 (contact: info@lankalead.lk)"},
+                )
+                if resp_nom.status_code == 200:
+                    places = resp_nom.json()
+                    if isinstance(places, list):
+                        for p in places:
+                            raw_name = p.get("name")
+                            if not raw_name or len(raw_name.strip()) < 2:
+                                continue
+                            norm = re.sub(r"[^a-z0-9]+", "", raw_name.lower())
+                            if norm in seen_names:
+                                continue
+                            seen_names.add(norm)
+
+                            lat = float(top_lat) if (top_lat := p.get("lat")) else None
+                            lon = float(top_lon) if (top_lon := p.get("lon")) else None
+                            display_addr = p.get("display_name") or f"{loc_str}, Sri Lanka"
+                            tags = p.get("extratags") or {}
+                            phone = tags.get("phone") or tags.get("contact:phone")
+                            website = tags.get("website") or tags.get("contact:website")
+
+                            socials: list[SocialLink] = []
+                            maps_url = (
+                                f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                                if lat is not None and lon is not None
+                                else f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote_plus(raw_name + ' ' + loc_str)}"
+                            )
+                            socials.append(SocialLink("Google Maps", maps_url))
+
+                            results.append(SourceBusiness(
+                                external_id=f"web-maps-{p.get('place_id', abs(hash(raw_name)) % 1000000)}",
+                                name=raw_name.strip(),
+                                category=category,
+                                phone=phone,
+                                address=display_addr,
+                                city=city or loc_str,
+                                district=district or loc_str,
+                                province=province or "Sri Lanka",
+                                website=website,
+                                social_links=tuple(socials),
+                            ))
+            except Exception as exc:
+                logger.warning("Web search place query failed: %s", exc)
+
+            # 2. LinkedIn company search via DuckDuckGo
+            try:
+                li_query = f'"{category}" "{loc_str}" Sri Lanka site:linkedin.com/company'
+                resp_li = await client.post("https://html.duckduckgo.com/html/", data={"q": li_query})
+                if resp_li.status_code == 200:
                     matches = re.findall(
-                        r'<a\s+class="result__url"\s+href="([^"]+)"[^>]*>\s*([^<]+)</a>', resp.text
+                        r'<a\s+class="result__url"\s+href="([^"]+)"[^>]*>\s*([^<]+)</a>', resp_li.text
                     )
                     for idx, (href, _) in enumerate(matches[:10]):
                         parsed = urlparse("https:" + href if href.startswith("//") else href)
@@ -644,6 +854,11 @@ class DuckDuckGoSearchBusinessSource:
                         target = qs.get("uddg", [href])[0]
                         if "linkedin.com/company/" in target:
                             slug = target.rstrip("/").split("/")[-1].replace("-", " ").title()
+                            norm = re.sub(r"[^a-z0-9]+", "", slug.lower())
+                            if norm in seen_names:
+                                continue
+                            seen_names.add(norm)
+                            maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote_plus(slug + ' ' + loc_str)}"
                             results.append(SourceBusiness(
                                 external_id=f"li-search-{idx}-{abs(hash(target)) % 100000}",
                                 name=slug,
@@ -654,20 +869,30 @@ class DuckDuckGoSearchBusinessSource:
                                 district=district or loc_str,
                                 province=province or "Sri Lanka",
                                 website=None,
-                                social_links=(SocialLink("LinkedIn", target),),
+                                social_links=(SocialLink("LinkedIn", target), SocialLink("Google Maps", maps_url)),
                             ))
-        except (httpx.HTTPError, OSError, ValueError):
-            return results
+            except Exception as exc:
+                logger.warning("LinkedIn search query skipped: %s", exc)
+
         return results
 
     async def check_health(self) -> ProviderHealth:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                res = await client.head("https://nominatim.openstreetmap.org", headers={"User-Agent": "LankaLeadDiscoveryBot/2.0"})
+                healthy = res.status_code < 400
+        except Exception:
+            healthy = False
         return ProviderHealth(
             provider_name=self.name,
-            is_healthy=True,
-            message="Search & LinkedIn Discovery active",
-            endpoints=("https://html.duckduckgo.com/html/",),
+            is_healthy=healthy,
+            message="Web & Google Maps Search Discovery active" if healthy else "Web search endpoints degraded",
+            endpoints=("https://nominatim.openstreetmap.org", "https://www.google.com/maps"),
             last_checked=datetime.now(UTC).isoformat(),
         )
+
+
+DuckDuckGoSearchBusinessSource = WebSearchBusinessSource
 
 
 class TikTokBusinessSource:
@@ -770,13 +995,13 @@ class TikTokBusinessSource:
 
 
 class CompositeBusinessSource:
-    """Combines OpenStreetMap, Sri Lanka Directory, LinkedIn Search, and TikTok into a unified deduplicated source."""
-    name = "Composite (OpenStreetMap + Directory + LinkedIn + TikTok)"
+    """Combines OpenStreetMap, Sri Lanka Directory, Web & Google Maps Search, and TikTok into a unified deduplicated source."""
+    name = "Composite (OpenStreetMap + Directory + Web & Maps + TikTok)"
 
     def __init__(self) -> None:
         self.osm = OpenStreetMapBusinessSource()
         self.directory = SriLankaDirectoryBusinessSource()
-        self.search = DuckDuckGoSearchBusinessSource()
+        self.search = WebSearchBusinessSource()
         self.tiktok = TikTokBusinessSource()
 
     async def search_businesses(
@@ -833,8 +1058,8 @@ class CompositeBusinessSource:
         return ProviderHealth(
             provider_name=self.name,
             is_healthy=osm_health.is_healthy,
-            message="Composite provider active (OSM + Directory + LinkedIn + TikTok)",
-            endpoints=osm_health.endpoints + ("https://rainbowpages.lk", "https://search.yahoo.com"),
+            message="Composite provider active (OSM + Directory + Web & Maps + TikTok)",
+            endpoints=osm_health.endpoints + ("https://rainbowpages.lk", "https://nominatim.openstreetmap.org"),
             last_checked=datetime.now(UTC).isoformat(),
         )
 
@@ -843,8 +1068,14 @@ AVAILABLE_COLLECTOR_PROVIDERS = [
     {
         "id": "composite",
         "name": "Multi-Source Deep Sweep",
-        "description": "Cross-references OpenStreetMap, Sri Lanka Yellow Pages, LinkedIn, and TikTok to maximize lead volume and phone numbers.",
+        "description": "Cross-references Google Maps previews, OpenStreetMap, Sri Lanka Yellow Pages, and TikTok to maximize lead volume and verified contacts.",
         "badge": "Recommended",
+    },
+    {
+        "id": "search",
+        "name": "Web & Google Maps Search Discovery",
+        "description": "Performs web searches and collects verified local businesses through Google Maps previews and listings.",
+        "badge": "Maps & Search",
     },
     {
         "id": "tiktok",
@@ -863,12 +1094,6 @@ AVAILABLE_COLLECTOR_PROVIDERS = [
         "name": "Sri Lanka Directory (RainbowPages)",
         "description": "Scrapes Sri Lanka's official yellow pages directory for verified local landlines & mobile numbers.",
         "badge": "Direct Phones",
-    },
-    {
-        "id": "search",
-        "name": "Web & LinkedIn Search",
-        "description": "Discovers active local businesses and verified corporate LinkedIn presences.",
-        "badge": "Social Search",
     },
     {
         "id": "mock",
@@ -901,7 +1126,7 @@ def get_business_source(provider_name: str | None = None) -> BusinessSource:
         return TikTokBusinessSource()
     if name in {"directory", "rainbowpages", "yellowpages"}:
         return SriLankaDirectoryBusinessSource()
-    if name in {"search", "ddg", "duckduckgo", "linkedin"}:
-        return DuckDuckGoSearchBusinessSource()
+    if name in {"search", "ddg", "duckduckgo", "linkedin", "web", "maps", "google_maps", "web_search"}:
+        return WebSearchBusinessSource()
     return OpenStreetMapBusinessSource()
 

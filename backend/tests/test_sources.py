@@ -120,3 +120,35 @@ def test_website_html_extracts_tiktok_link() -> None:
     assert social_dict["TikTok"] == "https://www.tiktok.com/@kandygems_official"
     assert "Facebook" in social_dict
 
+
+@pytest.mark.asyncio
+async def test_collect_google_maps_preview_mock_fast_path() -> None:
+    from app.sources import collect_google_maps_preview
+
+    preview = await collect_google_maps_preview(
+        name="Mock Colombo Cafe",
+        city="Colombo",
+        district="Colombo",
+        province="Western",
+    )
+    assert preview.maps_url is not None
+    assert preview.maps_url.startswith("https://www.google.com/maps/search/?api=1")
+    assert "Colombo" in preview.maps_url
+    assert preview.evidence is not None
+
+
+def test_web_search_business_source_provider_resolution() -> None:
+    from app.sources import WebSearchBusinessSource, get_available_providers, get_business_source
+
+    web_source = get_business_source("web")
+    assert isinstance(web_source, WebSearchBusinessSource)
+    assert "Web & Google Maps" in web_source.name
+
+    maps_source = get_business_source("maps")
+    assert isinstance(maps_source, WebSearchBusinessSource)
+
+    providers = get_available_providers()
+    provider_ids = [p["id"] for p in providers]
+    assert "search" in provider_ids
+
+
