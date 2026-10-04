@@ -24,6 +24,7 @@ import {
   MessageSquare,
   Phone,
   PhoneCall,
+  Radio,
   RefreshCw,
   Search,
   Send,
@@ -34,6 +35,7 @@ import {
   Trophy,
   X,
   XCircle,
+  Zap,
 } from "lucide-react";
 import "./styles.css";
 
@@ -47,12 +49,22 @@ type DiscoveryRun = {
   district?: string;
   city?: string;
   category_id: string;
+  source_provider?: string;
+  max_records?: number;
   businesses_found: number;
   websites_checked: number;
   websites_found: number;
   websites_not_detected: number;
   error?: string;
   created_at: string;
+};
+
+type ProviderMetadata = {
+  id: string;
+  name: string;
+  description: string;
+  badge: string;
+  is_healthy: boolean;
 };
 
 type Business = {
@@ -336,6 +348,9 @@ function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [runs, setRuns] = useState<DiscoveryRun[]>([]);
+  const [providers, setProviders] = useState<ProviderMetadata[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>("composite");
+  const [maxRecords, setMaxRecords] = useState<number>(50);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessDetail | null>(null);
   const [inspectingDiscovery, setInspectingDiscovery] = useState<Business | null>(null);
@@ -435,12 +450,14 @@ function App() {
       api<Location[]>("/locations"),
       api<DiscoveryRun[]>("/discovery"),
       api<ProviderStatus>("/providers/status").catch(() => null),
+      api<ProviderMetadata[]>("/collector/providers").catch(() => []),
     ])
-      .then(([loadedCategories, loadedLocations, loadedRuns, provider]) => {
+      .then(([loadedCategories, loadedLocations, loadedRuns, provider, loadedProviders]) => {
         setCategories(loadedCategories);
         setLocations(loadedLocations);
         setRuns(loadedRuns);
         if (provider) setProviderStatus(provider);
+        if (loadedProviders && loadedProviders.length > 0) setProviders(loadedProviders);
       })
       .catch(() => setMessage("Unable to load dashboard metadata."));
   }, [authenticated]);
@@ -611,42 +628,61 @@ function App() {
     }
   };
 
-  const startDiscovery = async () => {
-    if (!categoryId) {
-      setRunMessage("Please select a business category.");
-      return;
-    }
+  const startDiscovery = async (override?: {
+    locationId?: string;
+    categoryId?: string;
+    provider?: string;
+    maxRecords?: number;
+  }) => {
     setStartingDiscovery(true);
+    const targetLoc = override?.locationId !== undefined ? override.locationId : locationId;
+    const targetCat = override?.categoryId !== undefined ? override.categoryId : categoryId;
+    const targetProvider = override?.provider || selectedProvider;
+    const targetLimit = override?.maxRecords || maxRecords;
+
     let province: string | undefined = undefined;
     let district: string | undefined = undefined;
     let city: string | undefined = undefined;
 
-    if (locationId.startsWith("province:")) {
-      province = locationId.replace("province:", "");
-    } else if (locationId) {
-      const location = locations.find((item) => item.id === locationId);
+    if (targetLoc.startsWith("province:")) {
+      province = targetLoc.replace("province:", "");
+    } else if (targetLoc) {
+      const location = locations.find((item) => item.id === targetLoc);
       province = location?.province;
       district = location?.district;
       city = location?.city;
     }
 
     try {
-      const run = await api<DiscoveryRun>("/discovery", {
+      const run = await api<DiscoveryRun>("/collector/run", {
         method: "POST",
         body: JSON.stringify({
-          category_id: categoryId,
+          category_id: targetCat && targetCat !== "all" ? targetCat : undefined,
           province,
           district,
           city,
+          source_provider: targetProvider,
+          max_records: targetLimit,
+          sync_wait: false,
         }),
       });
       setRuns((current) => [run, ...current]);
-      setRunMessage(`Discovery run started (${run.id.slice(0, 8)}). Live progress updates below.`);
+      setRunMessage(
+        `🚀 Scraper job launched [${run.id.slice(0, 8)}] using ${targetProvider.toUpperCase()} (${targetLimit} lead limit). Live results streaming below...`
+      );
     } catch (error) {
-      setRunMessage(error instanceof Error ? error.message : "Unable to start discovery.");
+      setRunMessage(error instanceof Error ? error.message : "Unable to start scraper run.");
     } finally {
       setStartingDiscovery(false);
     }
+  };
+
+  const applyPresetAndRun = (locVal: string, catVal: string, provVal: string, limitVal: number) => {
+    setLocationId(locVal);
+    setCategoryId(catVal);
+    setSelectedProvider(provVal);
+    setMaxRecords(limitVal);
+    startDiscovery({ locationId: locVal, categoryId: catVal, provider: provVal, maxRecords: limitVal });
   };
 
   const cancelDiscovery = async (runId: string) => {
@@ -976,21 +1012,216 @@ function App() {
         </div>
       </header>
 
-      {/* Discovery Trigger Panel */}
-      <section className="panel discovery-form">
-        <div className="panel-heading">
+      {/* Active Running Scraper Live Pulse Banner */}
+      {runs.some((r) => r.status === "RUNNING" || r.status === "QUEUED") && (
+        (() => {
+          const activeRun = runs.find((r) => r.status === "RUNNING" || r.status === "QUEUED")!;
+          const catName = categories.find((c) => c.id === activeRun.category_id)?.name || "All Categories";
+          const locName = activeRun.city || activeRun.district || activeRun.province || "All Sri Lanka";
+          return (
+            <div className="scraper-pulse-card">
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                  <span className="pulse-beacon" />
+                  <strong style={{ fontSize: "1.05rem", letterSpacing: "0.02em" }}>
+                    LIVE CRAWLER ACTIVE: [{(activeRun.source_provider || "COMPOSITE").toUpperCase()}]
+                  </strong>
+                  <span className="badge" style={{ background: "rgba(255,255,255,0.2)", color: "#ffffff" }}>
+                    {activeRun.status}
+                  </span>
+                </div>
+                <p style={{ margin: 0, fontSize: "0.85rem", opacity: 0.9 }}>
+                  Scraping Target: <strong>{locName}</strong> · Category: <strong>{catName}</strong>
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
+                <div className="pulse-stats-row">
+                  <div className="pulse-stat-box">
+                    <span className="pulse-stat-val">{activeRun.businesses_found}</span>
+                    <span className="pulse-stat-lbl">Discovered</span>
+                  </div>
+                  <div className="pulse-stat-box">
+                    <span className="pulse-stat-val">{activeRun.websites_checked}</span>
+                    <span className="pulse-stat-lbl">Checked</span>
+                  </div>
+                  <div className="pulse-stat-box">
+                    <span className="pulse-stat-val" style={{ color: "#86efac" }}>
+                      {activeRun.websites_not_detected}
+                    </span>
+                    <span className="pulse-stat-lbl">No Website</span>
+                  </div>
+                </div>
+                <button
+                  className="secondary small"
+                  style={{
+                    background: "rgba(255,255,255,0.15)",
+                    color: "#ffffff",
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => cancelDiscovery(activeRun.id)}
+                >
+                  Stop Scraper
+                </button>
+              </div>
+            </div>
+          );
+        })()
+      )}
+
+      {/* Collector & Scraper Studio Panel */}
+      <section className="scraper-studio">
+        <div className="scraper-studio-header">
           <div>
-            <p className="eyebrow">DISCOVERY</p>
-            <h2>Start asynchronous discovery run</h2>
+            <p className="eyebrow" style={{ color: "var(--primary)", fontWeight: 800 }}>PROSPECTING ENGINE & WEB CRAWLER</p>
+            <h2>Collector & Business Scraper Studio</h2>
+            <p>
+              Crawl public sources across Sri Lanka to harvest businesses without websites, extract phone numbers, and populate your tele-sales calling list.
+            </p>
           </div>
-          <p>Queries permitted data providers to find public place records and analyze website presence.</p>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <span className="badge badge-verified" style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+              <Radio size={13} /> {providers.length || 5} Crawlers Active
+            </span>
+          </div>
         </div>
-        <div className="form-grid">
+
+        {/* 1-Click Quick Presets Bar */}
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", color: "#4f695b", marginBottom: "8px" }}>
+            ⚡ 1-Click Quick Scraper Presets
+          </div>
+          <div className="scraper-presets-bar">
+            <button
+              type="button"
+              className="scraper-preset-pill"
+              onClick={() => applyPresetAndRun("province:Western", "", "composite", 50)}
+              title="Scrape businesses across Western Province across all categories"
+            >
+              🚀 Western Province Cross-Industry (50)
+            </button>
+            <button
+              type="button"
+              className="scraper-preset-pill"
+              onClick={() => {
+                const colombo = locations.find((l) => l.city === "Colombo");
+                applyPresetAndRun(colombo ? colombo.id : "province:Western", "", "composite", 50);
+              }}
+              title="Scrape Colombo prime targets with phone numbers"
+            >
+              🏙️ Colombo Prime Targets (50)
+            </button>
+            <button
+              type="button"
+              className="scraper-preset-pill"
+              onClick={() => {
+                const galle = locations.find((l) => l.city === "Galle");
+                const hotelCat = categories.find((c) => c.slug === "hotels");
+                applyPresetAndRun(galle ? galle.id : "province:Southern", hotelCat ? hotelCat.id : "", "directory", 30);
+              }}
+              title="Scrape Galle hospitality and hotels via RainbowPages Phonebook"
+            >
+              🏖️ Galle & South Coast Hospitality (30)
+            </button>
+            <button
+              type="button"
+              className="scraper-preset-pill"
+              onClick={() => {
+                const kandy = locations.find((l) => l.city === "Kandy");
+                const cafeCat = categories.find((c) => c.slug === "cafes" || c.slug === "restaurants");
+                applyPresetAndRun(kandy ? kandy.id : "province:Central", cafeCat ? cafeCat.id : "", "osm", 30);
+              }}
+              title="Scrape Kandy cafes & food businesses"
+            >
+              ☕ Kandy Cafes & Food (30)
+            </button>
+            <button
+              type="button"
+              className="scraper-preset-pill"
+              onClick={() => applyPresetAndRun("", "", "composite", 100)}
+              title="Deep sweep across all Sri Lanka"
+            >
+              🔥 Nationwide Deep Sweep (100)
+            </button>
+          </div>
+        </div>
+
+        {/* Crawler Provider Selection Cards */}
+        <div style={{ marginBottom: "18px" }}>
+          <div style={{ fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", color: "#4f695b", marginBottom: "8px" }}>
+            Select Data Crawler / Source Provider
+          </div>
+          <div className="provider-grid">
+            {(providers.length > 0
+              ? providers
+              : [
+                  {
+                    id: "composite",
+                    name: "Multi-Source Deep Sweep",
+                    description: "Cross-references OSM, RainbowPages Directory, and LinkedIn for highest contact yield.",
+                    badge: "Recommended",
+                    is_healthy: true,
+                  },
+                  {
+                    id: "osm",
+                    name: "OpenStreetMap Places",
+                    description: "Overpass API geospatial business nodes and place tags across Sri Lanka.",
+                    badge: "Geo Data",
+                    is_healthy: true,
+                  },
+                  {
+                    id: "directory",
+                    name: "Sri Lanka Directory",
+                    description: "Scrapes RainbowPages national directory for local landline & mobile phone numbers.",
+                    badge: "Direct Phones",
+                    is_healthy: true,
+                  },
+                  {
+                    id: "search",
+                    name: "Web & LinkedIn Search",
+                    description: "Discovers active local businesses and corporate LinkedIn presences.",
+                    badge: "Social Search",
+                    is_healthy: true,
+                  },
+                  {
+                    id: "mock",
+                    name: "Simulated Dev Dataset",
+                    description: "Instant offline mock dataset of Sri Lankan businesses for rapid test runs.",
+                    badge: "Test Run",
+                    is_healthy: true,
+                  },
+                ]
+            ).map((p) => (
+              <div
+                key={p.id}
+                className={`provider-card ${selectedProvider === p.id ? "active" : ""}`}
+                onClick={() => setSelectedProvider(p.id)}
+              >
+                <div className="provider-card-header">
+                  <span className="provider-card-title">{p.name}</span>
+                  <span
+                    className={`provider-card-badge ${
+                      p.id === "composite" ? "provider-badge-recommended" : "provider-badge-other"
+                    }`}
+                  >
+                    {p.badge}
+                  </span>
+                </div>
+                <p className="provider-card-desc">{p.description}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Scraper Configuration Bar */}
+        <div className="scraper-controls-bar">
           <div>
-            <label>Location (City / District / Province)</label>
+            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
+              Target Geography
+            </label>
             <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-              <option value="">All Sri Lanka / Province Wide</option>
-              <optgroup label="Provinces (Province-Wide Search)">
+              <option value="">All Sri Lanka (Nationwide)</option>
+              <optgroup label="Provinces (Province-Wide Sweep)">
                 {SRI_LANKA_PROVINCES.map((prov) => (
                   <option key={`province:${prov}`} value={`province:${prov}`}>
                     {prov} Province
@@ -1006,33 +1237,75 @@ function App() {
               </optgroup>
             </select>
           </div>
+
           <div>
-            <label>Category</label>
+            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
+              Business Category
+            </label>
             <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-              <option value="">Select a category</option>
-              {categories.map((cat) => (
+              <option value="">✨ All Categories (Cross-Industry Sweep)</option>
+              {categories.filter((c) => c.slug !== "all").map((cat) => (
                 <option key={cat.id} value={cat.id}>
                   {cat.name}
                 </option>
               ))}
             </select>
           </div>
-          <button disabled={startingDiscovery} onClick={startDiscovery}>
+
+          <div>
+            <label style={{ fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase", color: "#375043", display: "block", marginBottom: "6px" }}>
+              Lead Limit
+            </label>
+            <div className="limit-selector">
+              <button
+                type="button"
+                className={`limit-pill ${maxRecords === 20 ? "active" : ""}`}
+                onClick={() => setMaxRecords(20)}
+              >
+                20
+              </button>
+              <button
+                type="button"
+                className={`limit-pill ${maxRecords === 50 ? "active" : ""}`}
+                onClick={() => setMaxRecords(50)}
+              >
+                50
+              </button>
+              <button
+                type="button"
+                className={`limit-pill ${maxRecords === 100 ? "active" : ""}`}
+                onClick={() => setMaxRecords(100)}
+              >
+                100
+              </button>
+            </div>
+          </div>
+
+          <button
+            style={{ height: "42px", padding: "0 22px", fontSize: "0.92rem", fontWeight: 700 }}
+            disabled={startingDiscovery}
+            onClick={() => startDiscovery()}
+          >
             {startingDiscovery ? <RefreshCw className="spin" size={16} /> : <Search size={16} />}
-            {startingDiscovery ? "Starting…" : "Start discovery"}
+            {startingDiscovery ? "Launching..." : "🚀 Launch Scraper"}
           </button>
         </div>
-        {runMessage && <p className="helper">{runMessage}</p>}
+
+        {runMessage && (
+          <p className="helper" style={{ marginTop: "12px", fontWeight: 600, color: "var(--primary)" }}>
+            {runMessage}
+          </p>
+        )}
       </section>
 
       {/* Runs activity list */}
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">RUNS</p>
+            <p className="eyebrow">SCRAPER AUDIT LOG</p>
             <h2>Discovery run history</h2>
           </div>
-          <p>Runs execute in background with retry backoff and SSRF-safe website analysis.</p>
+          <p>Runs execute asynchronously with retry backoff, phone/email contact extraction, and SSRF-safe website analysis.</p>
         </div>
         {runs.length === 0 ? (
           <p className="helper">No discovery runs initiated yet.</p>
@@ -1041,13 +1314,16 @@ function App() {
             {runs.slice(0, 5).map((run) => (
               <div className="run-row" key={run.id}>
                 <div>
-                  <div className="run-title">
-                    {run.city || run.district || run.province || "Sri Lanka"} ·{" "}
-                    {categories.find((cat) => cat.id === run.category_id)?.name || "Category"}
+                  <div className="run-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>{run.city || run.district || run.province || "Sri Lanka"} ·{" "}
+                    {categories.find((cat) => cat.id === run.category_id)?.name || "All Categories"}</span>
+                    <span className="badge" style={{ fontSize: "0.7rem", background: "#e0f2fe", color: "#0369a1" }}>
+                      {(run.source_provider || "composite").toUpperCase()}
+                    </span>
                   </div>
                   <span className="run-meta">
-                    {run.businesses_found} businesses · {run.websites_checked} websites checked ·{" "}
-                    {run.websites_found} verified found · {run.websites_not_detected} not detected
+                    {run.businesses_found} businesses discovered · {run.websites_checked} websites analyzed ·{" "}
+                    {run.websites_found} verified online · <strong style={{ color: "var(--primary)" }}>{run.websites_not_detected} targets without website (Prime Opportunities)</strong>
                   </span>
                   {run.error && <div className="run-error">Error: {run.error}</div>}
                 </div>
@@ -1059,7 +1335,7 @@ function App() {
                     </button>
                   ) : (
                     <button className="secondary small" onClick={() => setFilterRunId(run.id)}>
-                      Filter results to this run
+                      Filter leads to this scrape
                     </button>
                   )}
                   {(run.status === "QUEUED" || run.status === "RUNNING") && (

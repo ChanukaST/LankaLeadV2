@@ -54,6 +54,7 @@ from app.schemas import (
     BusinessDetailResponse,
     BusinessResponse,
     CategoryResponse,
+    CollectorRunRequest,
     DiscoveryCreate,
     DiscoveryResponse,
     HealthCheckResponse,
@@ -61,6 +62,7 @@ from app.schemas import (
     LocationResponse,
     OutreachUpdateRequest,
     PaginatedBusinesses,
+    ProviderMetadata,
     ProviderStatusResponse,
     TokenResponse,
     UserResponse,
@@ -117,6 +119,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             "ALTER TABLE businesses ADD COLUMN last_contacted_at TIMESTAMP",
             "ALTER TABLE website_checks ADD COLUMN emails_found TEXT",
             "ALTER TABLE website_checks ADD COLUMN phones_found TEXT",
+            "ALTER TABLE discovery_runs ADD COLUMN source_provider VARCHAR(50) DEFAULT 'composite'",
+            "ALTER TABLE discovery_runs ADD COLUMN max_records INTEGER DEFAULT 50",
         ):
             try:
                 await connection.execute(text(col_sql))
@@ -134,6 +138,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 logger.debug("Cleanup notice for %s: %s", cleanup_sql, exc)
 
     async with SessionLocal() as db:
+        all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
+        if not all_cat:
+            db.add(Category(name="All Categories", slug="all"))
+            await db.commit()
+
         for province, district, city in ALL_PROVINCES_LOCATIONS:
             exists = await db.scalar(
                 select(Location).where(Location.city == city, Location.district == district)
@@ -321,17 +330,80 @@ async def locations(db: AsyncSession = Depends(get_db)) -> list[LocationResponse
     return [LocationResponse.model_validate(row) for row in rows]
 
 
+@app.get("/api/collector/providers", response_model=list[ProviderMetadata])
+async def list_collector_providers() -> list[dict[str, str]]:
+    from app.sources import get_available_providers
+    return get_available_providers()
+
+
+@app.post("/api/collector/run", response_model=DiscoveryResponse, status_code=status.HTTP_202_ACCEPTED)
+async def trigger_collector_run(
+    payload: CollectorRunRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DiscoveryRun:
+    cat_id = payload.category_id
+    if not cat_id:
+        all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
+        if not all_cat:
+            all_cat = Category(name="All Categories", slug="all")
+            db.add(all_cat)
+            await db.flush()
+        cat_id = all_cat.id
+    else:
+        category = await db.get(Category, cat_id)
+        if not category:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_CATEGORY", "message": "Category not found"})
+
+    run = DiscoveryRun(
+        user_id=user.id,
+        province=payload.province,
+        district=payload.district,
+        city=payload.city,
+        category_id=cat_id,
+        source_provider=payload.source_provider or "composite",
+        max_records=payload.max_records or 50,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    from app.worker import run_discovery
+    if payload.sync_wait:
+        await run_discovery({}, str(run.id))
+        await db.refresh(run)
+    else:
+        background_tasks.add_task(run_discovery, {}, str(run.id))
+
+    return run
+
+
 @app.post("/api/discovery", response_model=DiscoveryResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_discovery(
     payload: DiscoveryCreate, background_tasks: BackgroundTasks,
     user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> DiscoveryRun:
-    category = await db.get(Category, payload.category_id)
-    if not category:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_CATEGORY", "message": "Category not found"})
+    cat_id = payload.category_id
+    if not cat_id:
+        all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
+        if not all_cat:
+            all_cat = Category(name="All Categories", slug="all")
+            db.add(all_cat)
+            await db.flush()
+        cat_id = all_cat.id
+    else:
+        category = await db.get(Category, cat_id)
+        if not category:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_CATEGORY", "message": "Category not found"})
     run = DiscoveryRun(
-        user_id=user.id, province=payload.province, district=payload.district,
-        city=payload.city, category_id=payload.category_id
+        user_id=user.id,
+        province=payload.province,
+        district=payload.district,
+        city=payload.city,
+        category_id=cat_id,
+        source_provider=payload.source_provider or "composite",
+        max_records=payload.max_records or 50,
     )
     db.add(run)
     await db.commit()

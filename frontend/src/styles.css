@@ -518,3 +518,215 @@ tr:hover td { background: #fbfdfb; }
   color: white;
 }
 
+/* Collector Scraper Studio */
+.scraper-studio {
+  background: #ffffff;
+  border: 1px solid #cce0d6;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 20px rgba(19, 58, 46, 0.05);
+}
+
+.scraper-studio-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.scraper-studio-header h2 {
+  font-size: 1.5rem;
+  margin: 4px 0 0;
+  font-weight: 800;
+  color: #0f291f;
+}
+.scraper-studio-header p {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  margin: 4px 0 0;
+}
+
+.scraper-presets-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.scraper-preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #f0f7f3;
+  border: 1px solid #cce3d7;
+  border-radius: 999px;
+  color: #164032;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.scraper-preset-pill:hover {
+  background: #184e3d;
+  color: #ffffff;
+  border-color: #184e3d;
+  transform: translateY(-1px);
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.provider-card {
+  background: #fbfdfc;
+  border: 1.5px solid #dbe6e0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.provider-card:hover {
+  border-color: #1b634c;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(27, 99, 76, 0.08);
+}
+.provider-card.active {
+  border-color: #133a2e;
+  background: #f2f9f5;
+  box-shadow: 0 0 0 2px #133a2e;
+}
+.provider-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.provider-card-title {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #112820;
+}
+.provider-card-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+.provider-badge-recommended {
+  background: #dcfce7;
+  color: #15803d;
+}
+.provider-badge-other {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.provider-card-desc {
+  font-size: 0.74rem;
+  color: #556b60;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.scraper-controls-bar {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.8fr auto;
+  gap: 14px;
+  align-items: flex-end;
+  background: #f7faf8;
+  border: 1px solid #dce8e1;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.limit-selector {
+  display: flex;
+  gap: 6px;
+}
+.limit-pill {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex: 1;
+  text-align: center;
+}
+.limit-pill.active {
+  background: #133a2e;
+  color: #ffffff;
+  border-color: #133a2e;
+}
+
+.scraper-pulse-card {
+  background: linear-gradient(135deg, #093729 0%, #0d543e 100%);
+  color: #ffffff;
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 6px 20px rgba(9, 55, 41, 0.25);
+  animation: scraperPulse 2.5s infinite ease-in-out;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+@keyframes scraperPulse {
+  0% { box-shadow: 0 0 0 0 rgba(19, 99, 74, 0.4); }
+  70% { box-shadow: 0 0 0 12px rgba(19, 99, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(19, 99, 74, 0); }
+}
+
+.pulse-beacon {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+  display: inline-block;
+  animation: blink 1s infinite alternate;
+}
+@keyframes blink {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+.pulse-stats-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pulse-stat-box {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 6px 14px;
+  border-radius: 8px;
+  min-width: 80px;
+}
+.pulse-stat-val {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+.pulse-stat-lbl {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #a7f3d0;
+}
+
+

@@ -675,16 +675,54 @@ class CompositeBusinessSource:
         )
 
 
-def get_business_source() -> BusinessSource:
-    name = get_settings().provider_name.casefold()
-    if name == "mock":
+AVAILABLE_COLLECTOR_PROVIDERS = [
+    {
+        "id": "composite",
+        "name": "Multi-Source Deep Sweep",
+        "description": "Cross-references OpenStreetMap, Sri Lanka Yellow Pages Directory, and LinkedIn to maximize phone numbers and verified leads.",
+        "badge": "Recommended",
+    },
+    {
+        "id": "osm",
+        "name": "OpenStreetMap Places",
+        "description": "Fast Overpass API geospatial nodes and business place tags across Sri Lanka.",
+        "badge": "Geo Data",
+    },
+    {
+        "id": "directory",
+        "name": "Sri Lanka Directory (RainbowPages)",
+        "description": "Scrapes Sri Lanka's official yellow pages directory for verified local landlines & mobile numbers.",
+        "badge": "Direct Phones",
+    },
+    {
+        "id": "search",
+        "name": "Web & LinkedIn Search",
+        "description": "Discovers active local businesses and verified corporate LinkedIn presences.",
+        "badge": "Social Search",
+    },
+    {
+        "id": "mock",
+        "name": "Simulated Dev Dataset",
+        "description": "Instant offline test dataset of fictional Sri Lankan businesses for rapid validation.",
+        "badge": "Instant / Test",
+    },
+]
+
+
+def get_available_providers() -> list[dict[str, str]]:
+    return AVAILABLE_COLLECTOR_PROVIDERS
+
+
+def get_business_source(provider_name: str | None = None) -> BusinessSource:
+    name = (provider_name or get_settings().provider_name).strip().casefold()
+    if name in {"mock", "test"}:
         return MockBusinessSource()
-    if name == "osm":
+    if name in {"osm", "openstreetmap"}:
         return OpenStreetMapBusinessSource()
-    if name in {"composite", "all", "multi"}:
+    if name in {"composite", "all", "multi", "deep_sweep"}:
         return CompositeBusinessSource()
-    if name in {"directory", "rainbowpages"}:
+    if name in {"directory", "rainbowpages", "yellowpages"}:
         return SriLankaDirectoryBusinessSource()
-    if name in {"search", "ddg", "linkedin"}:
+    if name in {"search", "ddg", "duckduckgo", "linkedin"}:
         return DuckDuckGoSearchBusinessSource()
-    raise ValueError(f"Unsupported business provider: {name}")
+    return OpenStreetMapBusinessSource()

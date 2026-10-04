@@ -180,6 +180,8 @@ class DiscoveryRun(Base):
     district: Mapped[str | None] = mapped_column(String(100), nullable=True)
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     category_id: Mapped[UUID] = mapped_column(ForeignKey("categories.id"))
+    source_provider: Mapped[str] = mapped_column(String(50), default="composite")
+    max_records: Mapped[int] = mapped_column(Integer, default=50)
     status: Mapped[RunStatus] = mapped_column(SqlEnum(RunStatus), default=RunStatus.QUEUED)
     businesses_found: Mapped[int] = mapped_column(Integer, default=0)
     websites_checked: Mapped[int] = mapped_column(Integer, default=0)

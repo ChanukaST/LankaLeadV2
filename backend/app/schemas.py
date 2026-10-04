@@ -42,7 +42,9 @@ class DiscoveryCreate(BaseModel):
     province: str | None = None
     district: str | None = None
     city: str | None = None
-    category_id: UUID
+    category_id: UUID | None = None
+    source_provider: str = "composite"
+    max_records: int = 50
 
 
 class DiscoveryResponse(BaseModel):
@@ -53,6 +55,8 @@ class DiscoveryResponse(BaseModel):
     district: str | None
     city: str | None
     category_id: UUID
+    source_provider: str = "composite"
+    max_records: int = 50
     businesses_found: int
     websites_checked: int
     websites_found: int
@@ -61,6 +65,24 @@ class DiscoveryResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+
+class CollectorRunRequest(BaseModel):
+    province: str | None = None
+    district: str | None = None
+    city: str | None = None
+    category_id: UUID | None = None
+    source_provider: str = "composite"
+    max_records: int = 50
+    sync_wait: bool = False
+
+
+class ProviderMetadata(BaseModel):
+    id: str
+    name: str
+    description: str
+    badge: str
+    is_healthy: bool = True
 
 
 class BusinessResponse(BaseModel):

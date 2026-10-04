@@ -184,3 +184,45 @@ async def test_outreach_pipeline_and_lead_metrics() -> None:
             assert filtered.status_code == 200
             assert any(b["id"] == biz_id for b in filtered.json()["data"])
 
+
+@pytest.mark.asyncio
+async def test_collector_scraper_endpoints() -> None:
+    unique_email = f"collector_{uuid4().hex[:8]}@example.com"
+    password = "CollectorPassword123"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        reg = await client.post("/api/auth/register", json={"email": unique_email, "password": password})
+        token = reg.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Test listing available providers
+        providers_res = await client.get("/api/collector/providers", headers=headers)
+        assert providers_res.status_code == 200
+        providers = providers_res.json()
+        assert isinstance(providers, list)
+        provider_ids = [p["id"] for p in providers]
+        assert "composite" in provider_ids
+        assert "osm" in provider_ids
+        assert "directory" in provider_ids
+        assert "search" in provider_ids
+        assert "mock" in provider_ids
+
+        # 2. Test synchronous collector scraper run with mock provider
+        run_res = await client.post(
+            "/api/collector/run",
+            headers=headers,
+            json={
+                "source_provider": "mock",
+                "province": "Western",
+                "city": "Colombo",
+                "max_records": 3,
+                "sync_wait": True,
+            },
+        )
+        assert run_res.status_code in {200, 202}
+        run_data = run_res.json()
+        assert run_data["status"] == "COMPLETED"
+        assert run_data["source_provider"] == "mock"
+        assert run_data["businesses_found"] >= 1
+
+
