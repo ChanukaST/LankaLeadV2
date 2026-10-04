@@ -24,7 +24,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import Select, func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
@@ -352,6 +352,14 @@ async def trigger_collector_run(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DiscoveryRun:
+    settings = get_settings()
+    provider_val = (payload.source_provider or "").strip().casefold()
+    if provider_val in {"mock", "test"} and settings.is_production:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "MOCK_PROVIDER_NOT_ALLOWED", "message": "Simulated mock provider is disabled in production deployment"},
+        )
+
     cat_id = payload.category_id
     if not cat_id:
         all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
@@ -393,6 +401,14 @@ async def create_discovery(
     payload: DiscoveryCreate, background_tasks: BackgroundTasks,
     user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> DiscoveryRun:
+    settings = get_settings()
+    provider_val = (payload.source_provider or "").strip().casefold()
+    if provider_val in {"mock", "test"} and settings.is_production:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "MOCK_PROVIDER_NOT_ALLOWED", "message": "Simulated mock provider is disabled in production deployment"},
+        )
+
     cat_id = payload.category_id
     if not cat_id:
         all_cat = await db.scalar(select(Category).where(Category.slug == "all"))
@@ -420,6 +436,7 @@ async def create_discovery(
     from app.worker import run_discovery
     background_tasks.add_task(run_discovery, {}, str(run.id))
     return run
+
 
 
 @app.get("/api/discovery", response_model=list[DiscoveryResponse])
@@ -483,6 +500,7 @@ def _build_business_query(
     date_to: datetime | None = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
+    exclude_mock: bool = True,
 ) -> Select[tuple[Business, str, WebsiteStatus | None, str | None]]:
     latest_status = (
         select(DiscoveryResult.website_status)
@@ -506,6 +524,15 @@ def _build_business_query(
         latest_status.label("latest_status"),
         latest_website_url.label("website_url"),
     ).join(Category)
+
+    settings = get_settings()
+    if exclude_mock or settings.is_production:
+        mock_source_subquery = (
+            select(BusinessSource.business_id)
+            .join(Source, Source.id == BusinessSource.source_id)
+            .where(Source.name.ilike("%mock%"))
+        )
+        query = query.where(~Business.id.in_(mock_source_subquery))
 
     if run_id:
         query = query.join(DiscoveryResult, DiscoveryResult.business_id == Business.id).where(
@@ -590,6 +617,7 @@ async def list_businesses(
     source_name: str | None = Query(default=None, description="Filter by source name"),
     date_from: datetime | None = Query(default=None, description="Created on or after"),
     date_to: datetime | None = Query(default=None, description="Created on or before"),
+    exclude_mock: bool = Query(default=True, description="Exclude simulated/mock dataset records"),
     sort_by: str = Query(default="created_at", pattern="^(name|city|district|province|created_at|website_status|outreach_status|last_contacted_at)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
@@ -604,7 +632,9 @@ async def list_businesses(
         social_only=social_only, has_contact=has_contact,
         run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by=sort_by, sort_order=sort_order,
+        exclude_mock=exclude_mock,
     )
+
     count = await db.scalar(select(func.count()).select_from(query.subquery()))
     rows = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).all()
 
@@ -919,9 +949,19 @@ async def update_business_outreach(
 
 @app.get("/api/lead-metrics", response_model=LeadMetricsResponse)
 async def get_lead_metrics(
+    exclude_mock: bool = Query(default=True, description="Exclude simulated/mock dataset records"),
     _: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> LeadMetricsResponse:
+    settings = get_settings()
+    filter_mock = exclude_mock or settings.is_production
+    mock_source_subquery = (
+        select(BusinessSource.business_id)
+        .join(Source, Source.id == BusinessSource.source_id)
+        .where(Source.name.ilike("%mock%"))
+    )
+    base_filter = ~Business.id.in_(mock_source_subquery) if filter_mock else true()
+
     latest_status = (
         select(DiscoveryResult.website_status)
         .where(DiscoveryResult.business_id == Business.id)
@@ -931,9 +971,10 @@ async def get_lead_metrics(
         .scalar_subquery()
     )
 
-    total_leads = (await db.scalar(select(func.count(Business.id)))) or 0
+    total_leads = (await db.scalar(select(func.count(Business.id)).where(base_filter))) or 0
 
     prime_query = select(func.count(Business.id)).where(
+        base_filter,
         (Business.phone.isnot(None) | Business.email.isnot(None))
         & (latest_status.in_([
             WebsiteStatus.NOT_DETECTED,
@@ -945,10 +986,11 @@ async def get_lead_metrics(
     )
     prime_targets = (await db.scalar(prime_query)) or 0
 
-    social_query = select(func.count(Business.id)).where(latest_status == WebsiteStatus.SOCIAL_ONLY)
+    social_query = select(func.count(Business.id)).where(base_filter, latest_status == WebsiteStatus.SOCIAL_ONLY)
     social_only = (await db.scalar(social_query)) or 0
 
     no_web_query = select(func.count(Business.id)).where(
+        base_filter,
         latest_status.in_([
             WebsiteStatus.NOT_DETECTED,
             WebsiteStatus.UNREACHABLE,
@@ -959,7 +1001,9 @@ async def get_lead_metrics(
     no_website = (await db.scalar(no_web_query)) or 0
 
     pipeline_raw = (await db.execute(
-        select(Business.outreach_status, func.count(Business.id)).group_by(Business.outreach_status)
+        select(Business.outreach_status, func.count(Business.id))
+        .where(base_filter)
+        .group_by(Business.outreach_status)
     )).all()
     pipeline_counts = {str(r[0] or "NEW"): int(r[1]) for r in pipeline_raw}
 
@@ -1032,6 +1076,7 @@ async def export_businesses_csv(
     source_name: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    exclude_mock: bool = Query(default=True, description="Exclude simulated/mock dataset records"),
     _: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -1042,6 +1087,7 @@ async def export_businesses_csv(
         social_only=social_only, has_contact=has_contact,
         run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by="name", sort_order="asc",
+        exclude_mock=exclude_mock,
     )
     rows = (await db.execute(query)).all()
     output = io.StringIO()
@@ -1100,6 +1146,7 @@ async def export_businesses_json(
     source_name: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    exclude_mock: bool = Query(default=True, description="Exclude simulated/mock dataset records"),
     _: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, object]]:
@@ -1110,7 +1157,9 @@ async def export_businesses_json(
         social_only=social_only, has_contact=has_contact,
         run_id=run_id, source_name=source_name, date_from=date_from, date_to=date_to,
         sort_by="name", sort_order="asc",
+        exclude_mock=exclude_mock,
     )
+
     rows = (await db.execute(query)).all()
     items_json: list[dict[str, object]] = []
     for r in rows:

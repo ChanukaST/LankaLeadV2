@@ -57,9 +57,66 @@ def test_osm_source_maps_linkedin_tag() -> None:
 
 def test_get_business_source_provider_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.config import get_settings
-    from app.sources import CompositeBusinessSource, get_business_source
+    from app.sources import CompositeBusinessSource, TikTokBusinessSource, get_business_source
 
     monkeypatch.setattr(get_settings(), "provider_name", "composite")
     source = get_business_source()
     assert isinstance(source, CompositeBusinessSource)
     assert "Composite" in source.name
+
+    tt_source = get_business_source("tiktok")
+    assert isinstance(tt_source, TikTokBusinessSource)
+    assert "TikTok" in tt_source.name
+
+
+def test_osm_source_maps_tiktok_tag() -> None:
+    result = OpenStreetMapBusinessSource._to_business(
+        {
+            "type": "node",
+            "id": 789,
+            "tags": {
+                "name": "Trendy Colombo Boutique",
+                "contact:tiktok": "https://www.tiktok.com/@trendycolombo",
+            },
+        },
+        "Salons",
+        "Western",
+        "Colombo",
+        "Colombo",
+    )
+    assert any(s.platform == "TikTok" and "@trendycolombo" in s.url for s in result.social_links)
+
+
+def test_production_environment_excludes_mock_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+    from app.sources import ProviderError, get_available_providers, get_business_source
+
+
+    monkeypatch.setattr(get_settings(), "environment", "production")
+    providers = get_available_providers()
+    provider_ids = [p["id"] for p in providers]
+    assert "mock" not in provider_ids
+    assert "tiktok" in provider_ids
+    assert "composite" in provider_ids
+
+    with pytest.raises(ProviderError, match="disabled in production"):
+        get_business_source("mock")
+
+
+def test_website_html_extracts_tiktok_link() -> None:
+    from app.websites import extract_social_links_from_html
+
+    html = """
+    <html>
+        <body>
+            <a href="https://www.tiktok.com/@kandygems_official">Follow our TikTok</a>
+            <a href="https://facebook.com/kandygems">Facebook</a>
+        </body>
+    </html>
+    """
+    socials = extract_social_links_from_html(html)
+    social_dict = dict(socials)
+    assert "TikTok" in social_dict
+    assert social_dict["TikTok"] == "https://www.tiktok.com/@kandygems_official"
+    assert "Facebook" in social_dict
+

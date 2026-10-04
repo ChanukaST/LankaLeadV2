@@ -130,9 +130,10 @@ function getWhatsAppUrl(phone?: string, customText?: string): string | null {
   return customText ? `${baseUrl}?text=${encodeURIComponent(customText)}` : baseUrl;
 }
 
-function generateColdPitch(biz: Business): { english: string; whatsapp: string } {
+function generateColdPitch(biz: Business): { english: string; whatsapp: string; tiktok: string } {
   const cat = biz.category || "business";
   const loc = [biz.city, biz.district].filter(Boolean).join(", ") || "Sri Lanka";
+  const tiktokProfile = biz.social_profiles?.find((s) => s.platform.toLowerCase() === "tiktok");
 
   const english = `Hello! Is this the manager or owner of ${biz.name}?
 
@@ -152,8 +153,19 @@ Would you like to see a free quick mockup website we could create for ${biz.name
 
 Looking forward to hearing from you!`;
 
-  return { english, whatsapp };
+  const tiktok = `Ayubowan / Hello ${biz.name} team! 🙏
+
+We came across your TikTok profile (${tiktokProfile?.profile_url || "@" + biz.name.toLowerCase().replace(/\s+/g, "")}) and loved your content and engagement!
+
+We noticed you don't have an official website link in your TikTok bio yet. Right now, when your videos get views, interested customers have to message you manually and wait for replies, causing many lost sales.
+
+We build fast mobile websites & online catalogs designed specifically to link directly in your TikTok bio. In 48 hours, you can have a direct WhatsApp order catalog, pricing menu, or appointment booking system working for you 24/7!
+
+Would you like us to send you a free 1-minute mockup preview for ${biz.name}?`;
+
+  return { english, whatsapp, tiktok };
 }
+
 
 const SRI_LANKA_PROVINCES = [
   "Central",
@@ -390,7 +402,8 @@ function App() {
   const [savingOutreach, setSavingOutreach] = useState(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState("");
   const [copiedPitch, setCopiedPitch] = useState(false);
-  const [pitchTab, setPitchTab] = useState<"whatsapp" | "call">("whatsapp");
+  const [pitchTab, setPitchTab] = useState<"whatsapp" | "call" | "tiktok">("whatsapp");
+
 
   // Filters
   const [categoryId, setCategoryId] = useState("");
@@ -970,6 +983,36 @@ function App() {
                       </div>
                     ) : null}
 
+                    {biz.social_profiles && biz.social_profiles.length > 0 && (
+                      <div style={{ display: "inline-flex", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
+                        {biz.social_profiles.map((p) => (
+                          <a
+                            key={p.profile_url}
+                            href={p.profile_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              fontSize: "0.72rem",
+                              padding: "1px 6px",
+                              borderRadius: "4px",
+                              background: p.platform === "TikTok" ? "#0f172a" : p.platform === "Instagram" ? "#fce7f3" : p.platform === "Facebook" ? "#eff6ff" : "#f1f5f9",
+                              color: p.platform === "TikTok" ? "#38bdf8" : p.platform === "Instagram" ? "#be185d" : p.platform === "Facebook" ? "#1d4ed8" : "#334155",
+                              textDecoration: "none",
+                              fontWeight: 600,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              border: p.platform === "TikTok" ? "1px solid #334155" : "none",
+                            }}
+                            title={`Open ${p.platform} profile`}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {p.platform === "TikTok" ? "🎵 TikTok" : p.platform === "Instagram" ? "📸 IG" : p.platform === "Facebook" ? "📘 FB" : p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+
                     {!biz.phone && !biz.email && (
                       <span style={{ color: "var(--text-muted)", fontStyle: "italic", fontSize: "0.8rem" }}>
                         No direct contact supplied
@@ -1191,16 +1234,33 @@ function App() {
             </select>
           </div>
 
-          <div className="form-field" style={{ maxWidth: "220px" }}>
+          <div className="form-field" style={{ maxWidth: "240px" }}>
             <label>4. Search Source</label>
             <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value)}>
-              <option value="composite">⚡ Multi-Source (Best Contact Yield)</option>
-              <option value="osm">🗺️ OpenStreetMap Places</option>
-              <option value="directory">📖 RainbowPages Phone Directory</option>
-              <option value="search">🔍 Web & Social Search</option>
-              <option value="mock">🧪 Test / Mock Dataset</option>
+              {providers && providers.length > 0 ? (
+                providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id === "composite" && "⚡ "}
+                    {p.id === "tiktok" && "🎵 "}
+                    {p.id === "osm" && "🗺️ "}
+                    {p.id === "directory" && "📖 "}
+                    {p.id === "search" && "🔍 "}
+                    {p.id === "mock" && "🧪 "}
+                    {p.name}
+                  </option>
+                ))
+              ) : (
+                <>
+                  <option value="composite">⚡ Multi-Source Deep Sweep</option>
+                  <option value="tiktok">🎵 TikTok Local Business Discovery</option>
+                  <option value="osm">🗺️ OpenStreetMap Places</option>
+                  <option value="directory">📖 RainbowPages Phone Directory</option>
+                  <option value="search">🔍 Web & LinkedIn Search</option>
+                </>
+              )}
             </select>
           </div>
+
 
           <div className="form-action">
             <button
@@ -1580,7 +1640,8 @@ function App() {
             {/* 1-Click WhatsApp Pitch & Tele-Sales Cold Script Generator */}
             {(() => {
               const pitch = generateColdPitch(selectedBusiness);
-              const currentScript = pitchTab === "whatsapp" ? pitch.whatsapp : pitch.english;
+              const currentScript = pitchTab === "whatsapp" ? pitch.whatsapp : (pitchTab === "tiktok" ? pitch.tiktok : pitch.english);
+              const whatsappSendPitch = pitchTab === "tiktok" ? pitch.tiktok : pitch.whatsapp;
               return (
                 <div className="pitch-card" style={{ marginBottom: "16px" }}>
                   <div className="pitch-header">
@@ -1606,7 +1667,7 @@ function App() {
                       )}
                       {getWhatsAppUrl(selectedBusiness.phone) && (
                         <a
-                          href={getWhatsAppUrl(selectedBusiness.phone, pitch.whatsapp)!}
+                          href={getWhatsAppUrl(selectedBusiness.phone, whatsappSendPitch)!}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="button small"
@@ -1638,14 +1699,21 @@ function App() {
                       className={`pitch-tab-btn ${pitchTab === "whatsapp" ? "active" : ""}`}
                       onClick={() => setPitchTab("whatsapp")}
                     >
-                      📱 WhatsApp Cold Message (Sinhala & English)
+                      📱 WhatsApp Cold Pitch
                     </button>
                     <button
                       type="button"
                       className={`pitch-tab-btn ${pitchTab === "call" ? "active" : ""}`}
                       onClick={() => setPitchTab("call")}
                     >
-                      📞 Phone Cold Call Script (Opening Pitch)
+                      📞 Phone Call Script
+                    </button>
+                    <button
+                      type="button"
+                      className={`pitch-tab-btn ${pitchTab === "tiktok" ? "active" : ""}`}
+                      onClick={() => setPitchTab("tiktok")}
+                    >
+                      🎵 TikTok Bio Pitch
                     </button>
                   </div>
 
@@ -1655,6 +1723,7 @@ function App() {
                 </div>
               );
             })()}
+
 
             {/* Business info cards */}
             <div className="grid-two">
@@ -1751,7 +1820,8 @@ function App() {
                     <div className="info-row" key={p.profile_url}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                         <span className="badge badge-source" style={{ textTransform: "none", fontSize: "0.75rem", padding: "2px 8px" }}>
-                          {p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform}
+                          {p.platform === "LinkedIn" ? "💼 LinkedIn" : p.platform === "Facebook" ? "📘 Facebook" : p.platform === "Instagram" ? "📸 Instagram" : p.platform === "TikTok" ? "🎵 TikTok" : p.platform}
+
                         </span>
                       </span>
                       <a

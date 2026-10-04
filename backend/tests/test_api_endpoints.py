@@ -202,6 +202,7 @@ async def test_collector_scraper_endpoints() -> None:
         assert isinstance(providers, list)
         provider_ids = [p["id"] for p in providers]
         assert "composite" in provider_ids
+        assert "tiktok" in provider_ids
         assert "osm" in provider_ids
         assert "directory" in provider_ids
         assert "search" in provider_ids
@@ -224,5 +225,35 @@ async def test_collector_scraper_endpoints() -> None:
         assert run_data["status"] == "COMPLETED"
         assert run_data["source_provider"] == "mock"
         assert run_data["businesses_found"] >= 1
+
+        # 3. Test that exclude_mock=true excludes mock businesses
+        mock_excluded_res = await client.get("/api/businesses?exclude_mock=true", headers=headers)
+        assert mock_excluded_res.status_code == 200
+        for b in mock_excluded_res.json()["data"]:
+            for s in b.get("sources", []):
+                assert "mock" not in s["name"].lower()
+
+        # 4. In production mode, mock provider should be barred from collector run
+        from app.core.config import get_settings
+        orig_env = get_settings().environment
+        try:
+            get_settings().environment = "production"
+            prod_run = await client.post(
+                "/api/collector/run",
+                headers=headers,
+                json={
+                    "source_provider": "mock",
+                    "province": "Western",
+                    "city": "Colombo",
+                },
+            )
+            assert prod_run.status_code == 400
+            assert prod_run.json()["detail"]["code"] == "MOCK_PROVIDER_NOT_ALLOWED"
+
+            prod_prov = await client.get("/api/collector/providers", headers=headers)
+            assert "mock" not in [p["id"] for p in prod_prov.json()]
+        finally:
+            get_settings().environment = orig_env
+
 
 

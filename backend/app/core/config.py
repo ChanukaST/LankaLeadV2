@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().casefold() in {"production", "prod"}
+
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -185,10 +185,14 @@ TWITTER_URL_PATTERN = re.compile(
 YOUTUBE_URL_PATTERN = re.compile(
     r"https?://(?:www\.)?youtube\.com/(?:@[a-zA-Z0-9_\-]+|channel/[a-zA-Z0-9_\-]+|c/[a-zA-Z0-9_\-]+)/?", re.IGNORECASE
 )
+TIKTOK_URL_PATTERN = re.compile(
+    r"https?://(?:www\.)?tiktok\.com/@[a-zA-Z0-9_.\-]+/?", re.IGNORECASE
+)
 
 EXCLUDED_SOCIAL_WORDS = {
     "sharer", "share", "intent", "login", "dialog", "home", "about", "help",
-    "privacy", "terms", "policies", "explore", "p", "reels", "stories", "accounts"
+    "privacy", "terms", "policies", "explore", "p", "reels", "stories", "accounts",
+    "video", "tag", "discover"
 }
 
 
@@ -211,6 +215,12 @@ def extract_social_links_from_html(html: str) -> tuple[tuple[str, str], ...]:
         if slug not in EXCLUDED_SOCIAL_WORDS:
             results.append(("Instagram", clean_url))
 
+    for url in TIKTOK_URL_PATTERN.findall(html):
+        clean_url = url.rstrip("/")
+        slug = clean_url.split("@")[-1].lower()
+        if slug not in EXCLUDED_SOCIAL_WORDS and not any(w in slug for w in ("sharer", "dialog", "share", "video")):
+            results.append(("TikTok", clean_url))
+
     for url in TWITTER_URL_PATTERN.findall(html):
         clean_url = url.rstrip("/")
         slug = clean_url.split("/")[-1].lower()
@@ -219,6 +229,7 @@ def extract_social_links_from_html(html: str) -> tuple[tuple[str, str], ...]:
 
     for url in YOUTUBE_URL_PATTERN.findall(html):
         results.append(("YouTube", url.rstrip("/")))
+
 
     seen: set[tuple[str, str]] = set()
     deduped: list[tuple[str, str]] = []

@@ -383,11 +383,14 @@ out center tags;
         social_keys = (
             ("Facebook", "contact:facebook"),
             ("Instagram", "contact:instagram"),
+            ("TikTok", "contact:tiktok"),
+            ("TikTok", "tiktok"),
             ("LinkedIn", "contact:linkedin"),
             ("LinkedIn", "linkedin"),
             ("Twitter", "contact:twitter"),
             ("YouTube", "contact:youtube"),
         )
+
         social_links_list = [
             SocialLink(platform, str(tags[key]))
             for platform, key in social_keys
@@ -607,14 +610,112 @@ class DuckDuckGoSearchBusinessSource:
         )
 
 
+class TikTokBusinessSource:
+    """Discovers Sri Lankan local businesses with active TikTok presences but no standalone websites."""
+
+    name = "TikTok Local Business Discovery"
+    _PHONE_REGEX = re.compile(
+        r'(?:\+94|0)\s*(?:7[0-9]|11|2[1-8]|3[1-8]|4[1-7]|5[1-7]|6[3-7]|8[1-3])\s*\d{3}\s*\d{4}'
+    )
+
+    async def search_businesses(
+        self, *, province: str | None, district: str | None, city: str | None, category: str
+    ) -> list[SourceBusiness]:
+        loc_str = city or district or province or "Sri Lanka"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        results: list[SourceBusiness] = []
+        queries = [
+            f'"{category}" "{loc_str}" Sri Lanka site:tiktok.com/@',
+            f'"{category}" "{loc_str}" Sri Lanka "tiktok.com/@"',
+        ]
+        seen_handles: set[str] = set()
+
+        async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
+            for q in queries:
+                try:
+                    resp = await client.get("https://search.yahoo.com/search", params={"p": q})
+                    if resp.status_code == 200:
+                        blocks = re.findall(r'<div class="compTitle[^"]*">(.*?)</div>', resp.text, re.DOTALL)
+                        full_text = resp.text
+
+                        for block in blocks:
+                            m_link = re.search(r'href="([^"]+)"', block)
+                            m_title = re.search(r'<h3[^>]*>(.*?)</h3>', block, re.DOTALL)
+                            if not m_link:
+                                continue
+                            raw_url = m_link.group(1)
+                            ru = re.search(r'/RU=([^/]+)/', raw_url)
+                            target = urllib.parse.unquote(ru.group(1)) if ru else raw_url
+
+                            tt_match = re.search(r'https?://(?:www\.)?tiktok\.com/@([a-zA-Z0-9_.\-]+)', target)
+                            if not tt_match:
+                                continue
+                            raw_handle = tt_match.group(1).rstrip("/").rstrip("?")
+                            handle = raw_handle.casefold()
+                            if handle in {"video", "tag", "foryou", "explore", "live", "music", "about", "discover", ""}:
+                                continue
+                            if handle in seen_handles:
+                                continue
+                            seen_handles.add(handle)
+
+                            clean_handle = handle.replace(".", " ").replace("_", " ").title()
+                            raw_title = m_title.group(1) if m_title else ""
+                            clean_title = re.sub(r'<[^>]+>', '', raw_title)
+                            clean_title = re.sub(r'(\||-)\s*TikTok.*$', '', clean_title, flags=re.IGNORECASE).strip()
+                            clean_title = re.sub(r'Watch trending videos.*$', '', clean_title, flags=re.IGNORECASE).strip()
+                            clean_title = re.sub(r'https?://\S+', '', clean_title).strip()
+                            biz_name = clean_title if (clean_title and len(clean_title) > 2 and "tiktok" not in clean_title.lower()) else clean_handle
+
+                            profile_url = f"https://www.tiktok.com/@{raw_handle}"
+
+                            phone_match = self._PHONE_REGEX.search(full_text)
+                            phone = phone_match.group(0).strip() if phone_match else None
+
+                            results.append(SourceBusiness(
+                                external_id=f"tiktok-{handle}",
+                                name=biz_name,
+                                category=category,
+                                phone=phone,
+                                address=f"{loc_str}, Sri Lanka",
+                                city=city or loc_str,
+                                district=district or loc_str,
+                                province=province or "Sri Lanka",
+                                website=None,
+                                social_links=(SocialLink("TikTok", profile_url),),
+                            ))
+                except (httpx.HTTPError, OSError, ValueError) as exc:
+                    logger.warning("TikTok discovery error for query '%s': %s", q, exc)
+
+        return results
+
+    async def check_health(self) -> ProviderHealth:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                res = await client.head("https://search.yahoo.com", headers={"User-Agent": "Mozilla/5.0"})
+                healthy = res.status_code < 400
+        except (httpx.HTTPError, OSError):
+            healthy = False
+        return ProviderHealth(
+            provider_name=self.name,
+            is_healthy=healthy,
+            message="TikTok Business Discovery active" if healthy else "TikTok discovery search endpoint unreachable",
+            endpoints=("https://search.yahoo.com", "https://www.tiktok.com"),
+            last_checked=datetime.now(UTC).isoformat(),
+        )
+
+
 class CompositeBusinessSource:
-    """Combines OpenStreetMap, Sri Lanka Directory, and LinkedIn Search into a unified deduplicated source."""
-    name = "Composite (OpenStreetMap + Directory + LinkedIn Search)"
+    """Combines OpenStreetMap, Sri Lanka Directory, LinkedIn Search, and TikTok into a unified deduplicated source."""
+    name = "Composite (OpenStreetMap + Directory + LinkedIn + TikTok)"
 
     def __init__(self) -> None:
         self.osm = OpenStreetMapBusinessSource()
         self.directory = SriLankaDirectoryBusinessSource()
         self.search = DuckDuckGoSearchBusinessSource()
+        self.tiktok = TikTokBusinessSource()
 
     async def search_businesses(
         self, *, province: str | None, district: str | None, city: str | None, category: str
@@ -623,6 +724,7 @@ class CompositeBusinessSource:
             self.osm.search_businesses(province=province, district=district, city=city, category=category),
             self.directory.search_businesses(province=province, district=district, city=city, category=category),
             self.search.search_businesses(province=province, district=district, city=city, category=category),
+            self.tiktok.search_businesses(province=province, district=district, city=city, category=category),
             return_exceptions=True,
         )
         combined: list[SourceBusiness] = []
@@ -669,8 +771,8 @@ class CompositeBusinessSource:
         return ProviderHealth(
             provider_name=self.name,
             is_healthy=osm_health.is_healthy,
-            message="Composite provider active (OSM + Directory + LinkedIn Search)",
-            endpoints=osm_health.endpoints + ("https://rainbowpages.lk", "https://html.duckduckgo.com"),
+            message="Composite provider active (OSM + Directory + LinkedIn + TikTok)",
+            endpoints=osm_health.endpoints + ("https://rainbowpages.lk", "https://search.yahoo.com"),
             last_checked=datetime.now(UTC).isoformat(),
         )
 
@@ -679,8 +781,14 @@ AVAILABLE_COLLECTOR_PROVIDERS = [
     {
         "id": "composite",
         "name": "Multi-Source Deep Sweep",
-        "description": "Cross-references OpenStreetMap, Sri Lanka Yellow Pages Directory, and LinkedIn to maximize phone numbers and verified leads.",
+        "description": "Cross-references OpenStreetMap, Sri Lanka Yellow Pages, LinkedIn, and TikTok to maximize lead volume and phone numbers.",
         "badge": "Recommended",
+    },
+    {
+        "id": "tiktok",
+        "name": "TikTok Local Business Discovery",
+        "description": "Finds popular Sri Lankan boutique brands, salons, bakers, and restaurants active on TikTok without websites.",
+        "badge": "High Conversion",
     },
     {
         "id": "osm",
@@ -710,19 +818,28 @@ AVAILABLE_COLLECTOR_PROVIDERS = [
 
 
 def get_available_providers() -> list[dict[str, str]]:
+    settings = get_settings()
+    if settings.is_production:
+        return [p for p in AVAILABLE_COLLECTOR_PROVIDERS if p["id"] != "mock"]
     return AVAILABLE_COLLECTOR_PROVIDERS
 
 
 def get_business_source(provider_name: str | None = None) -> BusinessSource:
     name = (provider_name or get_settings().provider_name).strip().casefold()
+    settings = get_settings()
     if name in {"mock", "test"}:
+        if settings.is_production:
+            raise ProviderError("Mock test provider is disabled in production deployment")
         return MockBusinessSource()
     if name in {"osm", "openstreetmap"}:
         return OpenStreetMapBusinessSource()
     if name in {"composite", "all", "multi", "deep_sweep"}:
         return CompositeBusinessSource()
+    if name in {"tiktok", "tik_tok"}:
+        return TikTokBusinessSource()
     if name in {"directory", "rainbowpages", "yellowpages"}:
         return SriLankaDirectoryBusinessSource()
     if name in {"search", "ddg", "duckduckgo", "linkedin"}:
         return DuckDuckGoSearchBusinessSource()
     return OpenStreetMapBusinessSource()
+
