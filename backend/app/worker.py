@@ -23,7 +23,12 @@ from app.models import (
     WebsiteCheck,
     WebsiteStatus,
 )
-from app.sources import collect_google_maps_preview, get_business_source
+from app.sources import (
+    collect_google_maps_preview,
+    get_business_source,
+    is_sri_lankan_coordinate,
+    validate_and_normalize_sl_phone,
+)
 from app.websites import check_website, probe_candidate_domains
 
 logger = logging.getLogger(__name__)
@@ -98,7 +103,9 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                         return
 
                     norm_name = normalize_business_name(record.name)
-                    clean_phone = re.sub(r"\D", "", record.phone) if record.phone else ""
+                    # Strictly validate genuine Sri Lankan phone number
+                    validated_phone = validate_and_normalize_sl_phone(record.phone)
+                    clean_phone = re.sub(r"\D", "", validated_phone) if validated_phone else ""
 
                     # Exclude targets that were already discovered in previous runs or exist in database
                     if (
@@ -116,15 +123,19 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                     if clean_phone and len(clean_phone) >= 7:
                         existing_phones.add(clean_phone)
 
+                    target_city = record.city if (record.city and record.city.strip().lower() != "sri lanka") else ""
+                    target_district = record.district if (record.district and record.district.strip().lower() != "sri lanka") else ""
+                    target_province = record.province if (record.province and record.province.strip().lower() != "sri lanka") else ""
+
                     business = Business(
                         name=record.name,
                         normalized_name=norm_name,
-                        phone=record.phone,
+                        phone=validated_phone,
                         email=record.email,
                         address=record.address,
-                        city=record.city,
-                        district=record.district,
-                        province=record.province,
+                        city=target_city,
+                        district=target_district,
+                        province=target_province,
                         category_id=cat.id,
                     )
                     db.add(business)
@@ -156,23 +167,27 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                     maps_url = maps_profile.url if maps_profile else None
                     maps_evidence: str | None = None
 
-                    # Collect information of target through Google Maps preview and web search
+                    # Collect information of target through Google Maps preview strictly in Sri Lanka
                     try:
                         maps_preview = await collect_google_maps_preview(
                             name=record.name,
-                            city=record.city,
-                            district=record.district,
-                            province=record.province,
+                            city=target_city or record.city,
+                            district=target_district or record.district,
+                            province=target_province or record.province,
+                            is_mock=record.external_id.startswith("mock"),
                         )
                         if maps_preview:
                             if not business.phone and maps_preview.phone:
-                                business.phone = maps_preview.phone
-                            if (not business.address or business.address.endswith(", Sri Lanka")) and maps_preview.address:
-                                business.address = maps_preview.address
-                            if maps_preview.latitude and not business.latitude:
-                                business.latitude = maps_preview.latitude
-                            if maps_preview.longitude and not business.longitude:
-                                business.longitude = maps_preview.longitude
+                                v_prev_p = validate_and_normalize_sl_phone(maps_preview.phone)
+                                if v_prev_p:
+                                    business.phone = v_prev_p
+                            if maps_preview.address and "Sri Lanka" in maps_preview.address:
+                                if not business.address or business.address in {"", "Sri Lanka"} or business.address.endswith(", Sri Lanka"):
+                                    business.address = maps_preview.address
+                            if maps_preview.latitude and maps_preview.longitude and not business.latitude:
+                                if is_sri_lankan_coordinate(maps_preview.latitude, maps_preview.longitude):
+                                    business.latitude = maps_preview.latitude
+                                    business.longitude = maps_preview.longitude
                             if not website_candidate and maps_preview.website:
                                 website_candidate = maps_preview.website
                             if not maps_url and maps_preview.maps_url:
@@ -260,7 +275,11 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                         if check.discovered_emails and not business.email:
                             business.email = check.discovered_emails[0]
                         if check.discovered_phones and not business.phone:
-                            business.phone = check.discovered_phones[0]
+                            for disc_p in check.discovered_phones:
+                                norm_p = validate_and_normalize_sl_phone(disc_p)
+                                if norm_p:
+                                    business.phone = norm_p
+                                    break
 
                         for disc_platform, disc_url in check.discovered_social_links:
                             existing_sp = await db.scalar(

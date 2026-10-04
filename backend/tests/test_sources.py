@@ -152,3 +152,56 @@ def test_web_search_business_source_provider_resolution() -> None:
     assert "search" in provider_ids
 
 
+def test_validate_and_normalize_sl_phone() -> None:
+    from app.sources import validate_and_normalize_sl_phone
+
+    # Valid mobiles
+    assert validate_and_normalize_sl_phone("0771234567") == "+94 77 123 4567"
+    assert validate_and_normalize_sl_phone("+94 71 234 5678") == "+94 71 234 5678"
+    assert validate_and_normalize_sl_phone("94701234567") == "+94 70 123 4567"
+    assert validate_and_normalize_sl_phone("+94 (0)76 123 4567") == "+94 76 123 4567"
+
+    # Valid geographic landlines (Colombo, Kandy, Galle, Kurunegala)
+    assert validate_and_normalize_sl_phone("0112345678") == "+94 11 234 5678"
+    assert validate_and_normalize_sl_phone("081 223 4567") == "+94 81 223 4567"
+    assert validate_and_normalize_sl_phone("091-2234567") == "+94 91 223 4567"
+    assert validate_and_normalize_sl_phone("037 222 3344") == "+94 37 222 3344"
+
+    # Strict rejection of non-Sri Lankan / foreign phone numbers
+    assert validate_and_normalize_sl_phone("+39 06 6988 3456") is None  # Italy
+    assert validate_and_normalize_sl_phone("+1 212 555 1234") is None   # USA
+    assert validate_and_normalize_sl_phone("+44 20 7946 0958") is None  # UK
+    assert validate_and_normalize_sl_phone("+91 98765 43210") is None   # India
+
+    # Strict rejection of non-existent area codes (e.g. 082, 028, 043, 056)
+    assert validate_and_normalize_sl_phone("0826216304") is None
+    assert validate_and_normalize_sl_phone("0288214040") is None
+    assert validate_and_normalize_sl_phone("0435923440") is None
+    assert validate_and_normalize_sl_phone("0569920391") is None
+
+    # Invalid lengths or empty values
+    assert validate_and_normalize_sl_phone("12345") is None
+    assert validate_and_normalize_sl_phone(None) is None
+    assert validate_and_normalize_sl_phone("") is None
+    assert validate_and_normalize_sl_phone("none") is None
+
+
+def test_is_sri_lankan_coordinate() -> None:
+    from app.sources import is_sri_lankan_coordinate
+
+    # Valid Sri Lankan locations
+    assert is_sri_lankan_coordinate(6.9271, 79.8612) is True    # Colombo
+    assert is_sri_lankan_coordinate(7.2906, 80.6337) is True    # Kandy
+    assert is_sri_lankan_coordinate(6.0535, 80.2210) is True    # Galle
+    assert is_sri_lankan_coordinate(9.6615, 80.0255) is True    # Jaffna
+
+    # Coordinates outside Sri Lanka
+    assert is_sri_lankan_coordinate(41.9028, 12.4964) is False  # Rome, Italy
+    assert is_sri_lankan_coordinate(51.5074, -0.1278) is False  # London, UK
+    assert is_sri_lankan_coordinate(13.0827, 80.2707) is False  # Chennai, India
+    assert is_sri_lankan_coordinate(0.0, 0.0) is False          # Equator
+    assert is_sri_lankan_coordinate(None, 80.0) is False
+    assert is_sri_lankan_coordinate(7.0, None) is False
+
+
+

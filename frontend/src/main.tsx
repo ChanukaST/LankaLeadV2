@@ -132,7 +132,8 @@ function getWhatsAppUrl(phone?: string, customText?: string): string | null {
 
 function generateColdPitch(biz: Business): { english: string; whatsapp: string; tiktok: string } {
   const cat = biz.category || "business";
-  const loc = [biz.city, biz.district].filter(Boolean).join(", ") || "Sri Lanka";
+  const locParts = [biz.city, biz.district, biz.province].filter((p) => p && p.toLowerCase() !== "none" && p.toLowerCase() !== "sri lanka");
+  const loc = locParts.length > 0 ? locParts.join(", ") : (biz.address ? biz.address.replace(/,\s*Sri Lanka$/i, "").trim() : "Sri Lanka");
   const tiktokProfile = biz.social_profiles?.find((s) => s.platform.toLowerCase() === "tiktok");
 
   const english = `Hello! Is this the manager or owner of ${biz.name}?
@@ -1028,7 +1029,17 @@ function App() {
             const locationParts = [biz.city, biz.district, biz.province]
               .map((p) => (p || "").trim())
               .filter((p) => p && p.toLowerCase() !== "none" && p.toLowerCase() !== "sri lanka");
-            const locationDisplay = locationParts.length > 0 ? locationParts.join(", ") : (biz.province || "Sri Lanka");
+            let locationDisplay = locationParts.length > 0 ? locationParts.join(", ") : (biz.province || "");
+            if (!locationDisplay && biz.address && biz.address.toLowerCase() !== "sri lanka") {
+              const cleanAddr = biz.address.replace(/,\s*Sri Lanka$/i, "").trim();
+              if (cleanAddr) {
+                const segs = cleanAddr.split(",").map((s) => s.trim()).filter(Boolean);
+                locationDisplay = segs.length > 2 ? segs.slice(-2).join(", ") : cleanAddr;
+              }
+            }
+            if (!locationDisplay) {
+              locationDisplay = "Sri Lanka";
+            }
             const isFresh = Boolean(
               biz.created_at && (Date.now() - new Date(biz.created_at).getTime() < 30 * 60 * 1000)
             );

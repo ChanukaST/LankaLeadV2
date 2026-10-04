@@ -82,6 +82,67 @@ class SourceBusiness:
     email: str | None = None
 
 
+# Sri Lanka geographic bounding box
+SL_MIN_LAT = 5.8
+SL_MAX_LAT = 10.0
+SL_MIN_LON = 79.5
+SL_MAX_LON = 82.2
+
+
+def is_sri_lankan_coordinate(lat: float | None, lon: float | None) -> bool:
+    """Checks whether coordinates fall strictly within Sri Lanka's geographical territory."""
+    if lat is None or lon is None:
+        return False
+    return SL_MIN_LAT <= lat <= SL_MAX_LAT and SL_MIN_LON <= lon <= SL_MAX_LON
+
+
+# Verified Sri Lankan area codes and mobile operator prefixes (2 digits)
+# Mobile: 70, 71, 72, 74, 75, 76, 77, 78
+# Geographic Area Codes:
+# 11: Colombo, 21: Jaffna, 22: Mullaitivu, 23: Mannar, 24: Vavuniya, 25: Anuradhapura, 26: Trincomalee, 27: Polonnaruwa
+# 31: Negombo/Chilaw, 32: Puttalam, 33: Gampaha, 34: Kalutara, 35: Kegalle, 36: Avissawella, 37: Kurunegala, 38: Panadura
+# 41: Matara, 45: Ratnapura, 47: Hambantota
+# 51: Hatton, 52: Nuwara Eliya, 54: Nawalapitiya, 55: Badulla, 57: Bandarawela
+# 63: Ampara, 65: Batticaloa, 66: Matale, 67: Kalmunai
+# 81: Kandy, 91: Galle
+SL_VALID_PREFIXES = (
+    "11", "21", "22", "23", "24", "25", "26", "27",
+    "31", "32", "33", "34", "35", "36", "37", "38",
+    "41", "45", "47", "51", "52", "54", "55", "57",
+    "63", "65", "66", "67", "81", "91",
+    "70", "71", "72", "74", "75", "76", "77", "78",
+)
+
+
+def validate_and_normalize_sl_phone(raw_phone: str | None) -> str | None:
+    """Strictly validates that a phone number is a genuine Sri Lankan number and normalizes to +94 XX XXX XXXX.
+    
+    Rejects any non-Sri Lankan numbers (e.g. Italian, US, UK, Indian) or invalid digits.
+    """
+    if not raw_phone:
+        return None
+    raw = str(raw_phone).strip()
+    if raw.lower() in {"none", "null", "n/a", "no", ""}:
+        return None
+
+    # Remove all non-digit characters
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("940"):
+        digits = digits[3:]
+    elif digits.startswith("0094"):
+        digits = digits[4:]
+    elif digits.startswith("94"):
+        digits = digits[2:]
+    elif digits.startswith("0"):
+        digits = digits[1:]
+
+    # Sri Lankan phone numbers must have exactly 9 digits after country/local prefix
+    if len(digits) == 9 and any(digits.startswith(p) for p in SL_VALID_PREFIXES):
+        return f"+94 {digits[:2]} {digits[2:5]} {digits[5:]}"
+
+    return None
+
+
 @dataclass
 class GoogleMapsPreviewInfo:
     place_name: str | None = None
@@ -100,26 +161,26 @@ async def collect_google_maps_preview(
     district: str | None = None,
     province: str | None = None,
     client: httpx.AsyncClient | None = None,
+    is_mock: bool = False,
 ) -> GoogleMapsPreviewInfo:
-    """Collects verified place coordinates, full physical address, phone, and Google Maps preview links for a target."""
+    """Collects verified place coordinates, physical address, and Google Maps preview links for a target strictly within Sri Lanka."""
     clean_name = re.sub(r'["\']', '', name).strip()
-    loc_str = city or district or province or "Sri Lanka"
+    loc_clean = (city or district or province or "").strip()
+    if loc_clean.lower() in {"sri lanka", "all", "none", ""}:
+        loc_clean = ""
+    loc_str = loc_clean or "Sri Lanka"
 
     # Fast-path for mock or test businesses
-    if "mock" in clean_name.lower():
-        enc = urllib.parse.quote_plus(f"{clean_name} {loc_str}")
+    if is_mock or "mock" in clean_name.lower():
+        enc = urllib.parse.quote_plus(f"{clean_name} {loc_str} Sri Lanka")
         return GoogleMapsPreviewInfo(
             place_name=clean_name,
             maps_url=f"https://www.google.com/maps/search/?api=1&query={enc}",
-            address=f"{loc_str}, Sri Lanka",
+            address=f"{loc_str}, Sri Lanka" if loc_str != "Sri Lanka" else "Sri Lanka",
             evidence="Mock Google Maps preview profile attached.",
         )
 
     evidence_parts: list[str] = []
-    phone_regex = re.compile(
-        r'(?:\+94|0)\s*(?:7[0-9]|11|2[1-8]|3[1-8]|4[1-7]|5[1-7]|6[3-7]|8[1-3])\s*\d{3}\s*\d{4}'
-    )
-
     lat: float | None = None
     lon: float | None = None
     address_val: str | None = None
@@ -136,12 +197,19 @@ async def collect_google_maps_preview(
     async def _do_lookup(c: httpx.AsyncClient) -> None:
         nonlocal lat, lon, address_val, phone_val, website_val, maps_url_val
 
-        # 1. Geocoded place lookup with addressdetails and extratags
-        nom_query = f"{clean_name} {loc_str} Sri Lanka"
+        # 1. Geocoded place lookup with addressdetails and extratags strictly bounded to Sri Lanka
+        nom_query = f"{clean_name} {loc_clean} Sri Lanka" if loc_clean else f"{clean_name} Sri Lanka"
         try:
             resp = await c.get(
                 "https://nominatim.openstreetmap.org/search",
-                params={"q": nom_query, "format": "json", "addressdetails": "1", "extratags": "1", "limit": "1"},
+                params={
+                    "q": nom_query,
+                    "countrycodes": "lk",
+                    "format": "json",
+                    "addressdetails": "1",
+                    "extratags": "1",
+                    "limit": "1",
+                },
                 headers=headers,
                 timeout=6.0,
             )
@@ -149,59 +217,40 @@ async def collect_google_maps_preview(
                 data = resp.json()
                 if data and isinstance(data, list):
                     top = data[0]
-                    if top.get("lat"):
-                        try:
-                            lat = float(top["lat"])
-                        except (ValueError, TypeError):
-                            pass
-                    if top.get("lon"):
-                        try:
-                            lon = float(top["lon"])
-                        except (ValueError, TypeError):
-                            pass
+                    # Verify place is strictly in Sri Lanka
+                    top_addr = top.get("address") or {}
+                    country_code = (top_addr.get("country_code") or "").lower()
+                    if country_code and country_code != "lk":
+                        return
+
+                    cand_lat = float(top["lat"]) if top.get("lat") else None
+                    cand_lon = float(top["lon"]) if top.get("lon") else None
+                    if cand_lat is not None and cand_lon is not None:
+                        if is_sri_lankan_coordinate(cand_lat, cand_lon):
+                            lat = cand_lat
+                            lon = cand_lon
+                            maps_url_val = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                            evidence_parts.append(f"Google Maps coordinates pinned at {lat}, {lon}.")
+
                     display_name = top.get("display_name")
-                    if display_name:
+                    if display_name and "Sri Lanka" in display_name:
                         address_val = display_name
                         evidence_parts.append(f"Google Maps verified address: {display_name}.")
 
                     tags = top.get("extratags") or {}
-                    tag_phone = tags.get("phone") or tags.get("contact:phone")
-                    if tag_phone:
-                        phone_val = tag_phone
-                        evidence_parts.append(f"Phone {tag_phone} verified via Maps preview.")
+                    tag_phone = tags.get("phone") or tags.get("contact:phone") or tags.get("contact:mobile")
+                    clean_sl_phone = validate_and_normalize_sl_phone(tag_phone)
+                    if clean_sl_phone:
+                        phone_val = clean_sl_phone
+                        evidence_parts.append(f"Phone {clean_sl_phone} verified via Maps preview.")
 
                     tag_web = tags.get("website") or tags.get("contact:website")
                     if tag_web:
-                        website_val = tag_web
-
-                    if lat is not None and lon is not None:
-                        maps_url_val = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                        evidence_parts.append(f"Google Maps coordinates pinned at {lat}, {lon}.")
+                        clean_w = str(tag_web).strip()
+                        if clean_w.startswith("http"):
+                            website_val = clean_w
         except Exception as exc:
             logger.debug("Nominatim preview lookup skipped for %s: %s", clean_name, exc)
-
-        # 2. Web search check for place phone / direct maps URL if missing
-        if not phone_val or not maps_url_val:
-            try:
-                b_query = f'"{clean_name}" "{loc_str}" Sri Lanka'
-                b_resp = await c.get("https://www.bing.com/search", params={"q": b_query}, headers=headers, timeout=6.0)
-                if b_resp.status_code == 200:
-                    text = b_resp.text
-                    if not phone_val:
-                        phones = phone_regex.findall(text)
-                        if phones:
-                            phone_val = phones[0].strip()
-                            evidence_parts.append(f"Phone {phone_val} confirmed from web search preview.")
-
-                    if not maps_url_val:
-                        maps_links = re.findall(
-                            r'https?://(?:www\.)?(?:google\.com/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s"\'<>]+', text
-                        )
-                        if maps_links:
-                            maps_url_val = maps_links[0]
-                            evidence_parts.append("Direct Google Maps place listing linked.")
-            except Exception as exc:
-                logger.debug("Search preview lookup skipped for %s: %s", clean_name, exc)
 
     try:
         if client:
@@ -213,7 +262,8 @@ async def collect_google_maps_preview(
         logger.debug("Google Maps preview collector encountered error for %s: %s", clean_name, exc)
 
     if not maps_url_val:
-        enc = urllib.parse.quote_plus(f"{clean_name} {loc_str} Sri Lanka")
+        enc_query = f"{clean_name} {loc_clean} Sri Lanka" if loc_clean else f"{clean_name} Sri Lanka"
+        enc = urllib.parse.quote_plus(enc_query)
         maps_url_val = f"https://www.google.com/maps/search/?api=1&query={enc}"
         evidence_parts.append("Google Maps place search link attached.")
 
@@ -519,7 +569,7 @@ out center tags;
                 async with httpx.AsyncClient(timeout=settings.nominatim_timeout_seconds) as client:
                     response = await client.get(
                         settings.nominatim_url,
-                        params={"q": f"{area_name}, Sri Lanka", "format": "jsonv2", "limit": 1},
+                        params={"q": f"{area_name}, Sri Lanka", "countrycodes": "lk", "format": "jsonv2", "limit": 1},
                         headers={"User-Agent": "LankaLead/0.1 (public-business-discovery)"},
                     )
                     response.raise_for_status()
@@ -530,7 +580,11 @@ out center tags;
                 longitude = places[0].get("lon")
                 if not latitude or not longitude:
                     raise ProviderLocationNotFoundError(f"OpenStreetMap returned no coordinates for {area_name}")
-                return f"nwr(around:{radius},{float(latitude)},{float(longitude)}){category_filter};"
+                lat_f = float(latitude)
+                lon_f = float(longitude)
+                if not is_sri_lankan_coordinate(lat_f, lon_f):
+                    raise ProviderLocationNotFoundError(f"OpenStreetMap returned coordinates outside Sri Lanka for {area_name}")
+                return f"nwr(around:{radius},{lat_f},{lon_f}){category_filter};"
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
                 await asyncio.sleep(1.0)
@@ -618,9 +672,7 @@ out center tags;
         )
         phone: str | None = None
         if raw_phone:
-            clean_p = str(raw_phone).strip()
-            if clean_p.lower() not in {"none", "null", "n/a", ""}:
-                phone = clean_p
+            phone = validate_and_normalize_sl_phone(str(raw_phone))
 
         raw_email = tags.get("contact:email") or tags.get("email")
         email: str | None = None
@@ -636,22 +688,38 @@ out center tags;
             if clean_w.lower() not in {"none", "null", "n/a", "no", ""}:
                 website = clean_w
 
-        raw_city = tags.get("addr:city") or city or ""
-        city_str = str(raw_city).strip() if raw_city and str(raw_city).lower() != "none" else ""
+        raw_city = (
+            tags.get("addr:city")
+            or tags.get("addr:town")
+            or tags.get("addr:suburb")
+            or tags.get("addr:village")
+            or tags.get("is_in:city")
+            or city
+            or ""
+        )
+        city_candidate = str(raw_city).strip()
+        city_str = city_candidate if city_candidate.lower() not in {"none", "sri lanka", "all", "null", ""} else ""
 
-        raw_district = tags.get("addr:district") or district or ""
-        district_str = str(raw_district).strip() if raw_district and str(raw_district).lower() != "none" else ""
+        raw_district = tags.get("addr:district") or tags.get("is_in:district") or district or ""
+        dist_candidate = str(raw_district).strip()
+        district_str = dist_candidate if dist_candidate.lower() not in {"none", "sri lanka", "all", "null", ""} else ""
 
         province_str = province or ""
-        if province_str.lower() == "none":
+        if province_str.lower() in {"none", "sri lanka", "all", "null"}:
             province_str = ""
+
+        clean_addr = address.strip() if address else ""
+        if not clean_addr or clean_addr.lower() in {"none", "null", "sri lanka"}:
+            clean_addr = f"{city_str}, Sri Lanka" if city_str else "Sri Lanka"
+        elif "sri lanka" not in clean_addr.lower():
+            clean_addr = f"{clean_addr}, Sri Lanka"
 
         return SourceBusiness(
             external_id=element_id,
             name=str(tags["name"]),
             category=category,
             phone=phone,
-            address=address,
+            address=clean_addr,
             city=city_str,
             district=district_str,
             province=province_str,
@@ -720,6 +788,22 @@ class SriLankaDirectoryBusinessSource:
                                 w for w in web_candidates
                                 if not any(ex in w for ex in ("touristdirectory", "weddingdirectory", "slt.lk", "beyondm"))
                             ]
+                            phones = set(re.findall(r"(?:\+94|0)\s*\d{2}\s*\d{3}\s*\d{4}", page.text))
+                            phone = None
+                            for cand_phone in phones:
+                                norm_phone = validate_and_normalize_sl_phone(cand_phone)
+                                if norm_phone:
+                                    phone = norm_phone
+                                    break
+
+                            web_candidates = set(re.findall(
+                                r'href="(https?://(?!www\.rainbowpages|rainbowpages|www\.facebook|www\.youtube|www\.instagram|www\.linkedin|twitter\.com)[^"]+)"',
+                                page.text,
+                            ))
+                            filtered_web = [
+                                w for w in web_candidates
+                                if not any(ex in w for ex in ("touristdirectory", "weddingdirectory", "slt.lk", "beyondm"))
+                            ]
                             website = filtered_web[0] if filtered_web else None
 
                             socials: list[SocialLink] = []
@@ -734,15 +818,19 @@ class SriLankaDirectoryBusinessSource:
                             email = next(iter(emails)).lower() if emails else None
 
                             slug_id = u.rstrip("/").split("/")[-1]
+                            loc_clean = (city or district or province or "").strip()
+                            if loc_clean.lower() in {"sri lanka", "all", "none"}:
+                                loc_clean = ""
+
                             results.append(SourceBusiness(
                                 external_id=f"rp-{slug_id}",
                                 name=raw_name,
                                 category=category,
                                 phone=phone,
-                                address=f"{loc_str}, Sri Lanka",
-                                city=city or loc_str,
-                                district=district or loc_str,
-                                province=province or "Sri Lanka",
+                                address=f"{loc_clean}, Sri Lanka" if loc_clean else "Sri Lanka",
+                                city=city or loc_clean,
+                                district=district or "",
+                                province=province or "",
                                 website=website,
                                 social_links=tuple(socials),
                                 email=email,
@@ -771,32 +859,37 @@ class WebSearchBusinessSource:
     """Discovers Sri Lankan businesses via web search and collects Google Maps previews for found targets."""
     name = "Web & Google Maps Search Discovery"
 
-    def __init__(self) -> None:
-        self._phone_regex = re.compile(
-            r'(?:\+94|0)\s*(?:7[0-9]|11|2[1-8]|3[1-8]|4[1-7]|5[1-7]|6[3-7]|8[1-3])\s*\d{3}\s*\d{4}'
-        )
-
     async def search_businesses(
         self, *, province: str | None, district: str | None, city: str | None, category: str
     ) -> list[SourceBusiness]:
-        loc_str = city or district or province or "Sri Lanka"
+        loc_clean = (city or district or province or "").strip()
+        if loc_clean.lower() in {"sri lanka", "all", "none", ""}:
+            loc_clean = ""
+        loc_str = loc_clean or "Sri Lanka"
         results: list[SourceBusiness] = []
         seen_names: set[str] = set()
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": "LankaLeadDiscoveryBot/2.0 (contact: info@lankalead.lk)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
 
         async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
-            # 1. Query Nominatim place search for category in location
+            # 1. Query Nominatim place search for category strictly restricted to Sri Lanka
             try:
-                nom_query = f"{category} {loc_str} Sri Lanka"
+                nom_query = f"{category} {loc_clean} Sri Lanka" if loc_clean else f"{category} Sri Lanka"
                 resp_nom = await client.get(
                     "https://nominatim.openstreetmap.org/search",
-                    params={"q": nom_query, "format": "json", "addressdetails": "1", "extratags": "1", "limit": "25"},
-                    headers={"User-Agent": "LankaLeadDiscoveryBot/2.0 (contact: info@lankalead.lk)"},
+                    params={
+                        "q": nom_query,
+                        "countrycodes": "lk",
+                        "format": "json",
+                        "addressdetails": "1",
+                        "extratags": "1",
+                        "limit": "25",
+                    },
+                    headers=headers,
                 )
                 if resp_nom.status_code == 200:
                     places = resp_nom.json()
@@ -808,20 +901,42 @@ class WebSearchBusinessSource:
                             norm = re.sub(r"[^a-z0-9]+", "", raw_name.lower())
                             if norm in seen_names:
                                 continue
-                            seen_names.add(norm)
+
+                            # Ensure strictly within Sri Lanka
+                            addr = p.get("address") or {}
+                            country_code = (addr.get("country_code") or "").lower()
+                            if country_code and country_code != "lk":
+                                continue
 
                             lat = float(top_lat) if (top_lat := p.get("lat")) else None
                             lon = float(top_lon) if (top_lon := p.get("lon")) else None
-                            display_addr = p.get("display_name") or f"{loc_str}, Sri Lanka"
+                            if lat is not None and lon is not None:
+                                if not is_sri_lankan_coordinate(lat, lon):
+                                    continue
+
+                            seen_names.add(norm)
+                            display_addr = p.get("display_name") or (f"{loc_clean}, Sri Lanka" if loc_clean else "Sri Lanka")
                             tags = p.get("extratags") or {}
-                            phone = tags.get("phone") or tags.get("contact:phone")
+                            raw_p = tags.get("phone") or tags.get("contact:phone") or tags.get("contact:mobile")
+                            phone = validate_and_normalize_sl_phone(raw_p)
                             website = tags.get("website") or tags.get("contact:website")
+
+                            # Resolve real town/suburb/city from addressdetails
+                            found_city = (
+                                addr.get("city")
+                                or addr.get("town")
+                                or addr.get("suburb")
+                                or addr.get("village")
+                                or loc_clean
+                            )
+                            found_district = addr.get("state_district") or addr.get("district") or district or ""
+                            found_province = addr.get("state") or addr.get("province") or province or ""
 
                             socials: list[SocialLink] = []
                             maps_url = (
                                 f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
                                 if lat is not None and lon is not None
-                                else f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote_plus(raw_name + ' ' + loc_str)}"
+                                else f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote_plus(raw_name + ' ' + (loc_clean or 'Sri Lanka') + ' Sri Lanka')}"
                             )
                             socials.append(SocialLink("Google Maps", maps_url))
 
@@ -831,48 +946,14 @@ class WebSearchBusinessSource:
                                 category=category,
                                 phone=phone,
                                 address=display_addr,
-                                city=city or loc_str,
-                                district=district or loc_str,
-                                province=province or "Sri Lanka",
+                                city=found_city,
+                                district=found_district,
+                                province=found_province,
                                 website=website,
                                 social_links=tuple(socials),
                             ))
             except Exception as exc:
                 logger.warning("Web search place query failed: %s", exc)
-
-            # 2. LinkedIn company search via DuckDuckGo
-            try:
-                li_query = f'"{category}" "{loc_str}" Sri Lanka site:linkedin.com/company'
-                resp_li = await client.post("https://html.duckduckgo.com/html/", data={"q": li_query})
-                if resp_li.status_code == 200:
-                    matches = re.findall(
-                        r'<a\s+class="result__url"\s+href="([^"]+)"[^>]*>\s*([^<]+)</a>', resp_li.text
-                    )
-                    for idx, (href, _) in enumerate(matches[:10]):
-                        parsed = urlparse("https:" + href if href.startswith("//") else href)
-                        qs = urllib.parse.parse_qs(parsed.query)
-                        target = qs.get("uddg", [href])[0]
-                        if "linkedin.com/company/" in target:
-                            slug = target.rstrip("/").split("/")[-1].replace("-", " ").title()
-                            norm = re.sub(r"[^a-z0-9]+", "", slug.lower())
-                            if norm in seen_names:
-                                continue
-                            seen_names.add(norm)
-                            maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote_plus(slug + ' ' + loc_str)}"
-                            results.append(SourceBusiness(
-                                external_id=f"li-search-{idx}-{abs(hash(target)) % 100000}",
-                                name=slug,
-                                category=category,
-                                phone=None,
-                                address=f"{loc_str}, Sri Lanka",
-                                city=city or loc_str,
-                                district=district or loc_str,
-                                province=province or "Sri Lanka",
-                                website=None,
-                                social_links=(SocialLink("LinkedIn", target), SocialLink("Google Maps", maps_url)),
-                            ))
-            except Exception as exc:
-                logger.warning("LinkedIn search query skipped: %s", exc)
 
         return results
 
@@ -1038,15 +1119,18 @@ class CompositeBusinessSource:
                     if s.url not in seen_social_urls:
                         seen_social_urls.add(s.url)
                         merged_socials.append(s)
+                cand_city = existing.city if existing.city and existing.city.lower() != "sri lanka" else (b.city if b.city and b.city.lower() != "sri lanka" else "")
+                cand_dist = existing.district if existing.district and existing.district.lower() != "sri lanka" else (b.district if b.district and b.district.lower() != "sri lanka" else "")
+                cand_prov = existing.province if existing.province and existing.province.lower() != "sri lanka" else (b.province if b.province and b.province.lower() != "sri lanka" else "")
                 by_norm_name[norm] = SourceBusiness(
                     external_id=existing.external_id,
                     name=existing.name,
                     category=existing.category,
                     phone=merged_phone,
                     address=existing.address or b.address,
-                    city=existing.city or b.city,
-                    district=existing.district or b.district,
-                    province=existing.province or b.province,
+                    city=cand_city,
+                    district=cand_dist,
+                    province=cand_prov,
                     website=merged_website,
                     social_links=tuple(merged_socials),
                     email=merged_email,
