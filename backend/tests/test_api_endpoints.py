@@ -14,6 +14,7 @@ def anyio_backend() -> str:
 @pytest.fixture(autouse=True)
 async def init_db() -> None:
     from sqlalchemy import delete, select
+
     from app.database import SessionLocal
     from app.models import Business, BusinessSource
     async with SessionLocal() as db:
@@ -353,4 +354,3 @@ async def test_subsequent_runs_exclude_previously_found_targets() -> None:
         assert res3.status_code in {200, 202}
         run3 = res3.json()
         assert run3["businesses_found"] == 0, "Run 3 should exclude all already-found targets"
-
