@@ -225,12 +225,11 @@ async def collect_google_maps_preview(
 
                     cand_lat = float(top["lat"]) if top.get("lat") else None
                     cand_lon = float(top["lon"]) if top.get("lon") else None
-                    if cand_lat is not None and cand_lon is not None:
-                        if is_sri_lankan_coordinate(cand_lat, cand_lon):
-                            lat = cand_lat
-                            lon = cand_lon
-                            maps_url_val = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                            evidence_parts.append(f"Google Maps coordinates pinned at {lat}, {lon}.")
+                    if cand_lat is not None and cand_lon is not None and is_sri_lankan_coordinate(cand_lat, cand_lon):
+                        lat = cand_lat
+                        lon = cand_lon
+                        maps_url_val = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                        evidence_parts.append(f"Google Maps coordinates pinned at {lat}, {lon}.")
 
                     display_name = top.get("display_name")
                     if display_name and "Sri Lanka" in display_name:
@@ -249,7 +248,7 @@ async def collect_google_maps_preview(
                         clean_w = str(tag_web).strip()
                         if clean_w.startswith("http"):
                             website_val = clean_w
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Nominatim preview lookup skipped for %s: %s", clean_name, exc)
 
     try:
@@ -258,7 +257,7 @@ async def collect_google_maps_preview(
         else:
             async with httpx.AsyncClient(headers=headers, timeout=8.0, follow_redirects=True) as c:
                 await _do_lookup(c)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Google Maps preview collector encountered error for %s: %s", clean_name, exc)
 
     if not maps_url_val:
@@ -865,7 +864,6 @@ class WebSearchBusinessSource:
         loc_clean = (city or district or province or "").strip()
         if loc_clean.lower() in {"sri lanka", "all", "none", ""}:
             loc_clean = ""
-        loc_str = loc_clean or "Sri Lanka"
         results: list[SourceBusiness] = []
         seen_names: set[str] = set()
 
@@ -910,9 +908,8 @@ class WebSearchBusinessSource:
 
                             lat = float(top_lat) if (top_lat := p.get("lat")) else None
                             lon = float(top_lon) if (top_lon := p.get("lon")) else None
-                            if lat is not None and lon is not None:
-                                if not is_sri_lankan_coordinate(lat, lon):
-                                    continue
+                            if lat is not None and lon is not None and not is_sri_lankan_coordinate(lat, lon):
+                                continue
 
                             seen_names.add(norm)
                             display_addr = p.get("display_name") or (f"{loc_clean}, Sri Lanka" if loc_clean else "Sri Lanka")
@@ -952,7 +949,7 @@ class WebSearchBusinessSource:
                                 website=website,
                                 social_links=tuple(socials),
                             ))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Web search place query failed: %s", exc)
 
         return results
@@ -962,7 +959,7 @@ class WebSearchBusinessSource:
             async with httpx.AsyncClient(timeout=6.0) as client:
                 res = await client.head("https://nominatim.openstreetmap.org", headers={"User-Agent": "LankaLeadDiscoveryBot/2.0"})
                 healthy = res.status_code < 400
-        except Exception:
+        except Exception:  # noqa: BLE001
             healthy = False
         return ProviderHealth(
             provider_name=self.name,

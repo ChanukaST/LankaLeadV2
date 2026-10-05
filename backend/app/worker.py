@@ -178,23 +178,30 @@ async def run_discovery(ctx: dict[str, object], run_id: str) -> None:
                         )
                         if maps_preview:
                             if not business.phone and maps_preview.phone:
-                                v_prev_p = validate_and_normalize_sl_phone(maps_preview.phone)
-                                if v_prev_p:
-                                    business.phone = v_prev_p
-                            if maps_preview.address and "Sri Lanka" in maps_preview.address:
-                                if not business.address or business.address in {"", "Sri Lanka"} or business.address.endswith(", Sri Lanka"):
-                                    business.address = maps_preview.address
-                            if maps_preview.latitude and maps_preview.longitude and not business.latitude:
-                                if is_sri_lankan_coordinate(maps_preview.latitude, maps_preview.longitude):
-                                    business.latitude = maps_preview.latitude
-                                    business.longitude = maps_preview.longitude
+                                 v_prev_p = validate_and_normalize_sl_phone(maps_preview.phone)
+                                 if v_prev_p:
+                                     business.phone = v_prev_p
+                            if (
+                                maps_preview.address
+                                and "Sri Lanka" in maps_preview.address
+                                and (not business.address or business.address in {"", "Sri Lanka"} or business.address.endswith(", Sri Lanka"))
+                            ):
+                                business.address = maps_preview.address
+                            if (
+                                maps_preview.latitude
+                                and maps_preview.longitude
+                                and not business.latitude
+                                and is_sri_lankan_coordinate(maps_preview.latitude, maps_preview.longitude)
+                            ):
+                                business.latitude = maps_preview.latitude
+                                business.longitude = maps_preview.longitude
                             if not website_candidate and maps_preview.website:
                                 website_candidate = maps_preview.website
                             if not maps_url and maps_preview.maps_url:
                                 maps_url = maps_preview.maps_url
                             if maps_preview.evidence:
                                 maps_evidence = maps_preview.evidence
-                    except Exception as maps_exc:
+                    except Exception as maps_exc:  # noqa: BLE001
                         logger.debug("Google Maps preview enrichment error for %s: %s", record.name, maps_exc)
 
                     if maps_url:

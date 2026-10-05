@@ -14,6 +14,7 @@ def anyio_backend() -> str:
 @pytest.fixture(autouse=True)
 async def init_db() -> None:
     from sqlalchemy import delete, select
+
     from app.database import SessionLocal
     from app.models import Business, BusinessSource
     async with SessionLocal() as db:
